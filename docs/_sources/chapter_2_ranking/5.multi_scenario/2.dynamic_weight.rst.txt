@@ -61,7 +61,7 @@ NU的代码实现如下：
 
 .. code:: python
 
-   class GateNU(tf.keras.layers.Layer):
+   class GateNU(nn.Module):
        """
        两层门控网络（NU）：用于为不同分支/专家动态生成权重或系数。
        结构：Dense(ReLU) -> Dense(Sigmoid) -> gamma 缩放。
@@ -71,14 +71,14 @@ NU的代码实现如下：
                     gamma=2.,
                     l2_reg=0.):
            assert len(hidden_units) == 2
-           self.gamma = gamma
-           self.dense_layers = [
-               tf.keras.layers.Dense(hidden_units[0], activation="relu", kernel_regularizer=tf.keras.regularizers.l2(l2_reg)),  # 第一层：非线性特征提取
-               tf.keras.layers.Dense(hidden_units[1], activation="sigmoid", kernel_regularizer=tf.keras.regularizers.l2(l2_reg)) # 第二层：输出 (0,1) 门值
-           ]
            super(GateNU, self).__init__()
+           self.gamma = gamma
+           self.dense_layers = nn.ModuleList([
+               Dense(hidden_units[0], activation="relu", kernel_regularizer=l2_reg),  # 第一层：非线性特征提取
+               Dense(hidden_units[1], activation="sigmoid", kernel_regularizer=l2_reg) # 第二层：输出 (0,1) 门值
+           ])
 
-       def call(self, inputs):
+       def forward(self, inputs):
            output = self.dense_layers[0](inputs)  # [B, hidden_units[0]]
            # 乘以 gamma 对 Sigmoid 输出进行缩放。
            output = self.gamma * self.dense_layers[1](output)  # [B, hidden_units[1]]
@@ -120,23 +120,23 @@ EPNet的实现代码如下：
 
 .. code:: python
 
-   class EPNet(tf.keras.layers.Layer):
+   class EPNet(Layer):
        def __init__(self,
                     l2_reg=0.,
                     **kwargs):
            self.l2_reg = l2_reg
-           self.gate_nu = None
            super(EPNet, self).__init__( **kwargs)
+           self.gate_nu = None
 
        def build(self, input_shape):
            assert len(input_shape) == 2
            shape1, shape2 = input_shape
            self.gate_nu = GateNU(hidden_units=[shape2[-1], shape2[-1]], l2_reg=self.l2_reg)
 
-       def call(self, inputs, *args, **kwargs):
+       def forward(self, inputs, *args, **kwargs):
            domain, emb = inputs
-           # stop_gradient 阻断系数支路对 emb 的反向梯度，避免过度耦合。
-           return self.gate_nu(tf.concat([domain, tf.stop_gradient(emb)], axis=-1)) * emb  # 输出形状 [B, D_emb]
+           # detach() 阻断系数支路对 emb 的反向梯度（stop gradient），避免过度耦合。
+           return self.gate_nu(torch.cat([domain, emb.detach()], dim=-1)) * emb  # 输出形状 [B, D_emb]
 
 PPNet：用户感知的参数个性化
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -172,7 +172,7 @@ PPNet实现代码如下：
 
 .. code:: python
 
-   class PPNet(tf.keras.layers.Layer):
+   class PPNet(Layer):
        # 核心：用 persona 生成逐层、逐塔的门控系数，对输出按维度缩放
        def __init__(self,
                     multiples,
@@ -181,39 +181,38 @@ PPNet实现代码如下：
                     dropout=0.,
                     l2_reg=0.,
                     **kwargs):
+           super(PPNet, self).__init__( **kwargs)
            self.hidden_units = hidden_units
            self.l2_reg = l2_reg
            self.multiples = multiples
            # 每个塔一份同结构的层
-           self.dense_layers = [
-               [tf.keras.layers.Dense(u, activation=activation,
-                                      kernel_regularizer=tf.keras.regularizers.l2(l2_reg))
-                for u in hidden_units]
+           self.dense_layers = nn.ModuleList([
+               nn.ModuleList([Dense(u, activation=activation, kernel_regularizer=l2_reg)
+                              for u in hidden_units])
                for _ in range(multiples)
-           ]
-           self.dropout_layers = [
-               [tf.keras.layers.Dropout(dropout) for _ in hidden_units]
+           ])
+           self.dropout_layers = nn.ModuleList([
+               nn.ModuleList([nn.Dropout(dropout) for _ in hidden_units])
                for _ in range(multiples)
-           ]
-           self.gate_nu = []
-           super(PPNet, self).__init__( **kwargs)
+           ])
+           self.gate_nu = nn.ModuleList()
 
        def build(self, input_shape):
            # 为每层生成 gate：输出维度 units*multiples，后续按塔切片
-           self.gate_nu = [
+           self.gate_nu = nn.ModuleList([
                GateNU([units * self.multiples, units * self.multiples], l2_reg=self.l2_reg)
                for units in self.hidden_units
-           ]
+           ])
 
-       def call(self, inputs, training=None, **kwargs):
+       def forward(self, inputs, **kwargs):
            inputs, persona = inputs
 
-           # 先计算各层 gate（persona ⊕ stop_gradient(inputs)）
+           # 先计算各层 gate（persona ⊕ stop_gradient(inputs)，用 detach() 实现）
            gate_list = []
-           concat_in = tf.concat([persona, tf.stop_gradient(inputs)], axis=-1)
+           concat_in = torch.cat([persona, inputs.detach()], dim=-1)
            for i, gate in enumerate(self.gate_nu):
-               g = gate(concat_in)                     # [B, units*multiples]
-               g = tf.split(g, self.multiples, axis=1) # 每塔 [B, units]
+               g = gate(concat_in)                                    # [B, units*multiples]
+               g = torch.split(g, g.shape[1] // self.multiples, dim=1) # 每塔 [B, units]
                gate_list.append(g)
            
            # 按塔前向：逐层 Dense 后用 gate 做逐维调制
@@ -222,7 +221,7 @@ PPNet实现代码如下：
                x = inputs
                for i in range(len(self.hidden_units)):
                    x = gate_list[i][n] * self.dense_layers[n][i](x)
-                   x = self.dropout_layers[n][i](x, training=training)
+                   x = self.dropout_layers[n][i](x)  # 训练/推理由 model.train()/eval() 控制
                outputs.append(x)
            return outputs
 
@@ -356,7 +355,7 @@ APG Layer核心代码：
 
 .. code:: python
 
-   class APGLayer(tf.keras.layers.Layer):
+   class APGLayer(Layer):
        """
        APG 自适应参数生成层（简化版）
        核心：共享 U/V（输入→K、K→输出） + 样本私有 S_i（K×K）。
@@ -366,7 +365,7 @@ APG Layer核心代码：
        def __init__(self, input_dim, output_dim, scene_emb_dim,
                     activation='relu', generate_activation=None,
                     inner_activation=None, mf_k=16,**kwargs):
-           super(APGLayer, self).__init__( **kwargs)
+           super(APGLayer, self).__init__(name=kwargs.get("name"))
            self.input_dim = input_dim
            self.output_dim = output_dim
            self.scene_emb_dim = scene_emb_dim
@@ -377,7 +376,7 @@ APG Layer核心代码：
 
            # 低秩维度 K：取输入/输出较小维度并缩减，强调“低秩”
            min_dim = min(input_dim, output_dim)
-           self.k_dim = int(np.math.ceil(min_dim / mf_k))  # K ≪ min(N, M)
+           self.k_dim = math.ceil(min_dim / mf_k)  # K ≪ min(N, M)
 
            # 私有因子 S_i：从场景嵌入生成逐样本的 K×K 权重与 K 偏置
            kk_weight_size = self.k_dim * self.k_dim  # K×K
@@ -385,12 +384,13 @@ APG Layer核心代码：
            self.specific_bias_kk = DNNs([self.k_dim], activation=generate_activation)
 
            # 共享因子 U/V：固定的 NK（输入→K）与 KM（K→输出）权重与偏置
-           self.shared_weight_nk = self.add_weight(shape=(input_dim, self.k_dim), initializer='glorot_uniform', name='shared_weight_nk')
-           self.shared_bias_nk = self.add_weight(shape=(self.k_dim,), initializer='zeros', name='shared_bias_nk')
-           self.shared_weight_km = self.add_weight(shape=(self.k_dim, output_dim), initializer='glorot_uniform', name='shared_weight_km')
-           self.shared_bias_km = self.add_weight(shape=(output_dim,), initializer='zeros', name='shared_bias_km')
+           # 形状已知，直接在构造时创建参数（随模型 .to(device) 迁移）
+           self.shared_weight_nk = self.add_weight('shared_weight_nk', (input_dim, self.k_dim), initializer='glorot_uniform', device='cpu')
+           self.shared_bias_nk = self.add_weight('shared_bias_nk', (self.k_dim,), initializer='zeros', device='cpu')
+           self.shared_weight_km = self.add_weight('shared_weight_km', (self.k_dim, output_dim), initializer='glorot_uniform', device='cpu')
+           self.shared_bias_km = self.add_weight('shared_bias_km', (output_dim,), initializer='zeros', device='cpu')
 
-       def call(self, inputs):
+       def forward(self, inputs):
            """
            前向（分解前向）：
            x → NK（共享U）→ K → S_i（样本私有KK调制）→ K_mod → KM（共享V）→ 输出 → activation
@@ -399,22 +399,22 @@ APG Layer核心代码：
 
            # 生成样本私有 KK 权重/偏置（S_i）
            specific_weight_kk = self.specific_weight_kk(scene_emb)              # [B, K*K]
-           specific_weight_kk = tf.reshape(specific_weight_kk, (-1, self.k_dim, self.k_dim))  # [B, K, K]
+           specific_weight_kk = torch.reshape(specific_weight_kk, (-1, self.k_dim, self.k_dim))  # [B, K, K]
            specific_bias_kk = self.specific_bias_kk(scene_emb)                  # [B, K]
 
            # NK：输入到 K（共享 U）
-           k = tf.matmul(x, self.shared_weight_nk) + self.shared_bias_nk        # [B, K]
+           k = torch.matmul(x, self.shared_weight_nk) + self.shared_bias_nk     # [B, K]
            if self.inner_activation:
                k = self.inner_activation(k)
 
            # KK：样本私有调制（批量矩阵乘）：[B,1,K] × [B,K,K] → [B,1,K]
-           k_mod = tf.matmul(tf.expand_dims(k, 1), specific_weight_kk)          # [B, 1, K]
-           k_mod = tf.squeeze(k_mod, 1) + specific_bias_kk                      # [B, K]
+           k_mod = torch.matmul(k.unsqueeze(1), specific_weight_kk)             # [B, 1, K]
+           k_mod = k_mod.squeeze(1) + specific_bias_kk                          # [B, K]
            if self.inner_activation:
                k_mod = self.inner_activation(k_mod)
 
            # KM：K 到输出（共享 V）
-           output = tf.matmul(k_mod, self.shared_weight_km) + self.shared_bias_km
+           output = torch.matmul(k_mod, self.shared_weight_km) + self.shared_bias_km
 
            # 最终激活（可选）
            if self.activation:

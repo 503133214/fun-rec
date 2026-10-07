@@ -783,11 +783,17 @@ Softmax 开销较大。Sampled Softmax
     <span class="n">metrics</span> <span class="o">=</span> <span class="n">evaluate_model</span><span class="p">(</span><span class="n">models</span><span class="p">,</span> <span class="n">processed_data</span><span class="p">,</span> <span class="n">cfg</span><span class="o">.</span><span class="n">evaluation</span><span class="p">,</span> <span class="n">feature_columns</span><span class="p">)</span>
     <span class="nb">print</span><span class="p">(</span><span class="n">build_metrics_table</span><span class="p">(</span><span class="n">metrics</span><span class="p">))</span>
 
-    <span class="c1"># 保存用户塔和物品塔</span>
+    <span class="c1"># 保存用户塔和物品塔：子模型与主模型共享参数，</span>
+    <span class="c1"># save_model 保存主模型参数 + 重建信息，并用 tower 记录加载时返回哪个塔</span>
     <span class="n">user_model</span> <span class="o">=</span> <span class="n">models</span><span class="p">[</span><span class="mi">1</span><span class="p">]</span>
     <span class="n">item_model</span> <span class="o">=</span> <span class="n">models</span><span class="p">[</span><span class="mi">2</span><span class="p">]</span>
-    <span class="n">user_model</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">SAVED_MODELS_DIR</span> <span class="o">/</span> <span class="s2">&quot;user_model&quot;</span><span class="p">)</span>
-    <span class="n">item_model</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">SAVED_MODELS_DIR</span> <span class="o">/</span> <span class="s2">&quot;item_model&quot;</span><span class="p">)</span>
+    <span class="n">save_kwargs</span> <span class="o">=</span> <span class="nb">dict</span><span class="p">(</span>
+        <span class="n">build_function</span><span class="o">=</span><span class="n">model_config_dict</span><span class="p">[</span><span class="s2">&quot;training&quot;</span><span class="p">][</span><span class="s2">&quot;build_function&quot;</span><span class="p">],</span>
+        <span class="n">feature_columns</span><span class="o">=</span><span class="n">feature_columns</span><span class="p">,</span>
+        <span class="n">model_config</span><span class="o">=</span><span class="n">model_config_dict</span><span class="p">[</span><span class="s2">&quot;training&quot;</span><span class="p">][</span><span class="s2">&quot;model_params&quot;</span><span class="p">],</span>
+    <span class="p">)</span>
+    <span class="n">save_model</span><span class="p">(</span><span class="n">user_model</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">USER_MODEL_PATH</span><span class="p">),</span> <span class="n">tower</span><span class="o">=</span><span class="s2">&quot;user_model&quot;</span><span class="p">,</span> <span class="o">**</span><span class="n">save_kwargs</span><span class="p">)</span>
+    <span class="n">save_model</span><span class="p">(</span><span class="n">item_model</span><span class="p">,</span> <span class="nb">str</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">ITEM_MODEL_PATH</span><span class="p">),</span> <span class="n">tower</span><span class="o">=</span><span class="s2">&quot;item_model&quot;</span><span class="p">,</span> <span class="o">**</span><span class="n">save_kwargs</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>YoutubeDNN
@@ -914,8 +920,15 @@ FM 的二阶交叉计算，<code class="docutils literal notranslate"><span clas
     <span class="n">metrics</span> <span class="o">=</span> <span class="n">evaluate_model</span><span class="p">(</span><span class="n">models</span><span class="p">,</span> <span class="n">processed_data</span><span class="p">,</span> <span class="n">cfg</span><span class="o">.</span><span class="n">evaluation</span><span class="p">,</span> <span class="n">feature_columns</span><span class="p">)</span>
     <span class="nb">print</span><span class="p">(</span><span class="n">build_metrics_table</span><span class="p">(</span><span class="n">metrics</span><span class="p">))</span>
 
-    <span class="c1"># 保存模型</span>
-    <span class="n">main_model</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">RANKING_MODEL_PATH</span><span class="p">)</span>
+    <span class="c1"># 保存模型（参数 + 重建信息，在线服务通过 load_model 重建并加载）</span>
+    <span class="n">save_model</span><span class="p">(</span>
+        <span class="n">main_model</span><span class="p">,</span>
+        <span class="nb">str</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">RANKING_MODEL_PATH</span><span class="p">),</span>
+        <span class="n">build_function</span><span class="o">=</span><span class="n">model_config_dict</span><span class="p">[</span><span class="s2">&quot;training&quot;</span><span class="p">][</span><span class="s2">&quot;build_function&quot;</span><span class="p">],</span>
+        <span class="n">feature_columns</span><span class="o">=</span><span class="n">feature_columns</span><span class="p">,</span>
+        <span class="n">model_config</span><span class="o">=</span><span class="n">model_config_dict</span><span class="p">[</span><span class="s2">&quot;training&quot;</span><span class="p">][</span><span class="s2">&quot;model_params&quot;</span><span class="p">],</span>
+        <span class="n">tower</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
+    <span class="p">)</span>
 
     <span class="c1"># 保存模型配置（供在线推理使用）</span>
     <span class="n">pickle</span><span class="o">.</span><span class="n">dump</span><span class="p">({</span>
@@ -1045,20 +1058,21 @@ Redis 存储用户特征，使用共享文件目录存储模型文件。</p>
     <span class="n">shutil</span><span class="o">.</span><span class="n">copy2</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">ITEM_EMB_PATH</span><span class="p">,</span> <span class="n">recall_dir</span> <span class="o">/</span> <span class="s2">&quot;item_embeddings.npy&quot;</span><span class="p">)</span>
     <span class="n">shutil</span><span class="o">.</span><span class="n">copy2</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">ITEM_EMB_PATH</span><span class="p">,</span> <span class="n">deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;item_embeddings.npy&quot;</span><span class="p">)</span>
 
-    <span class="c1"># 3. 用户塔模型（复制整个目录）</span>
-    <span class="n">user_model_path</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">SAVED_MODELS_DIR</span> <span class="o">/</span> <span class="s2">&quot;user_model&quot;</span>
+    <span class="c1"># 3. 用户塔模型（PyTorch .pt 单文件）</span>
+    <span class="n">user_model_path</span> <span class="o">=</span> <span class="n">config</span><span class="o">.</span><span class="n">USER_MODEL_PATH</span>
     <span class="n">model_deploy_dir</span> <span class="o">=</span> <span class="n">deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;model&quot;</span> <span class="o">/</span> <span class="s2">&quot;user_recall&quot;</span> <span class="o">/</span> <span class="s2">&quot;v1&quot;</span>
     <span class="n">model_deploy_dir</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-    <span class="n">shutil</span><span class="o">.</span><span class="n">copytree</span><span class="p">(</span><span class="n">user_model_path</span><span class="p">,</span> <span class="n">model_deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;user_model&quot;</span><span class="p">)</span>
+    <span class="n">shutil</span><span class="o">.</span><span class="n">copy2</span><span class="p">(</span><span class="n">user_model_path</span><span class="p">,</span> <span class="n">model_deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;user_model.pt&quot;</span><span class="p">)</span>
 
     <span class="c1"># 更新版本指针</span>
-    <span class="n">version_info</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;version&quot;</span><span class="p">:</span> <span class="s2">&quot;v1&quot;</span><span class="p">,</span> <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;model/user_recall/v1/user_model&quot;</span><span class="p">}</span>
+    <span class="n">version_info</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;version&quot;</span><span class="p">:</span> <span class="s2">&quot;v1&quot;</span><span class="p">,</span> <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;model/user_recall/v1/user_model.pt&quot;</span><span class="p">}</span>
     <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;model&quot;</span> <span class="o">/</span> <span class="s2">&quot;user_recall&quot;</span> <span class="o">/</span> <span class="s2">&quot;active.json&quot;</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
         <span class="n">json</span><span class="o">.</span><span class="n">dump</span><span class="p">(</span><span class="n">version_info</span><span class="p">,</span> <span class="n">f</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>TensorFlow SavedModel
-是一个目录，包含模型结构和权重。我们将整个目录复制到部署目录，保持目录结构完整。</p>
+<p>PyTorch 模型由 <code class="docutils literal notranslate"><span class="pre">save_model</span></code> 保存为单个 <code class="docutils literal notranslate"><span class="pre">.pt</span></code>
+文件，其中包含模型参数和重建模型所需的信息（构建函数、特征列、模型参数）。部署时只需将该文件复制到部署目录，在线服务再通过
+<code class="docutils literal notranslate"><span class="pre">load_model</span></code> 重建模型并加载参数。</p>
 <p>版本管理是生产环境中的重要功能。通过 <code class="docutils literal notranslate"><span class="pre">active.json</span></code>
 指针文件，在线服务可以知道当前应该加载哪个版本的模型。模型更新时，先部署新版本的模型文件，再更新指针，可以实现无感知的模型热更新。</p>
 <p>排序模型的部署类似：</p>
@@ -1073,12 +1087,12 @@ Redis 存储用户特征，使用共享文件目录存储模型文件。</p>
     <span class="c1"># 2. DeepFM 模型</span>
     <span class="n">model_deploy_dir</span> <span class="o">=</span> <span class="n">deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;model&quot;</span> <span class="o">/</span> <span class="s2">&quot;ranking&quot;</span> <span class="o">/</span> <span class="s2">&quot;v1&quot;</span>
     <span class="n">model_deploy_dir</span><span class="o">.</span><span class="n">mkdir</span><span class="p">(</span><span class="n">parents</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">exist_ok</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-    <span class="n">shutil</span><span class="o">.</span><span class="n">copytree</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">RANKING_MODEL_PATH</span><span class="p">,</span> <span class="n">model_deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;ranking_model&quot;</span><span class="p">)</span>
+    <span class="n">shutil</span><span class="o">.</span><span class="n">copy2</span><span class="p">(</span><span class="n">config</span><span class="o">.</span><span class="n">RANKING_MODEL_PATH</span><span class="p">,</span> <span class="n">model_deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;ranking_model.pt&quot;</span><span class="p">)</span>
 
     <span class="c1"># 更新版本指针</span>
     <span class="n">version_info</span> <span class="o">=</span> <span class="p">{</span>
         <span class="s2">&quot;version&quot;</span><span class="p">:</span> <span class="s2">&quot;v1&quot;</span><span class="p">,</span>
-        <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;model/ranking/v1/ranking_model&quot;</span><span class="p">,</span>
+        <span class="s2">&quot;path&quot;</span><span class="p">:</span> <span class="s2">&quot;model/ranking/v1/ranking_model.pt&quot;</span><span class="p">,</span>
         <span class="s2">&quot;model_type&quot;</span><span class="p">:</span> <span class="s2">&quot;deepfm&quot;</span>
     <span class="p">}</span>
     <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;model&quot;</span> <span class="o">/</span> <span class="s2">&quot;ranking&quot;</span> <span class="o">/</span> <span class="s2">&quot;active.json&quot;</span><span class="p">,</span> <span class="s2">&quot;w&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>

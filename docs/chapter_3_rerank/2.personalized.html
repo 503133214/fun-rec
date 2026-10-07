@@ -464,61 +464,83 @@ Softmax 函数。Softmax 在此扮演以下两个关键角色。</p>
 <span class="math notranslate nohighlight">\(pv_j\)</span>，然后作为关键输入送入PRM的输入层。</p></li>
 </ol>
 <p>PRM核心代码如下：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 模型输入层</span>
-<span class="n">input_layer_dict</span> <span class="o">=</span> <span class="n">build_input_layer</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">PRMModel</span><span class="p">(</span><span class="n">FunRecModel</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">feature_columns</span><span class="p">,</span> <span class="n">max_seq_len</span><span class="p">,</span> <span class="n">transformer_blocks</span><span class="p">,</span> <span class="n">nums_head</span><span class="p">,</span>
+                 <span class="n">dropout_rate</span><span class="p">,</span> <span class="n">intermediate_dim</span><span class="p">,</span> <span class="n">pos_emb_trainable</span><span class="p">):</span>
+        <span class="c1"># 模型输入层</span>
+        <span class="n">input_layer_dict</span> <span class="o">=</span> <span class="n">build_input_layer</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">input_names</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">input_layer_dict</span><span class="o">.</span><span class="n">keys</span><span class="p">()),</span> <span class="n">name</span><span class="o">=</span><span class="s2">&quot;prm&quot;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">max_seq_len</span> <span class="o">=</span> <span class="n">max_seq_len</span>
+        <span class="c1"># 特征Embedding层：按group返回各组特征的embedding</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">embedding</span> <span class="o">=</span> <span class="n">FeatureEmbedding</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;embedding/&quot;</span><span class="p">)</span>
 
-<span class="c1"># 用户侧Embedding：将用户相关特征的embedding拼接为一个向量，形状为 [B, D]</span>
-<span class="n">user_part_embedding</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span><span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s1">&#39;user_part&#39;</span><span class="p">)</span>  <span class="c1"># BxD</span>
+        <span class="c1"># 位置编码：为每个时间步（位置）加入位置信息，帮助 Transformer 捕捉顺序关系</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">position_encoding</span> <span class="o">=</span> <span class="n">PositionEncodingLayer</span><span class="p">(</span>
+            <span class="n">dims</span><span class="o">=</span><span class="n">feature_columns</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">emb_dim</span><span class="p">,</span>
+            <span class="n">max_len</span><span class="o">=</span><span class="n">max_seq_len</span><span class="p">,</span>
+            <span class="n">trainable</span><span class="o">=</span><span class="n">pos_emb_trainable</span><span class="p">,</span>
+            <span class="n">initializer</span><span class="o">=</span><span class="s1">&#39;glorot_uniform&#39;</span>
+        <span class="p">)</span>
 
-<span class="c1"># 将用户向量扩展到序列维度，使每个时间步（或位置）都携带同一用户上下文</span>
-<span class="c1"># tf.expand_dims(x, axis=1)：在第1维增加一个长度为1的维度 -&gt; [B, 1, D]</span>
-<span class="c1"># tf.tile(..., [1, max_seq_len, 1])：沿序列维复制 max_seq_len 次 -&gt; [B, max_len, D]</span>
-<span class="n">user_part_embedding</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span>
-    <span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">tile</span><span class="p">(</span><span class="n">tf</span><span class="o">.</span><span class="n">expand_dims</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="n">max_seq_len</span><span class="p">,</span> <span class="mi">1</span><span class="p">])</span>
-<span class="p">)(</span><span class="n">user_part_embedding</span><span class="p">)</span>  <span class="c1"># [B, max_len, D]</span>
+        <span class="c1"># Transformer 编码层堆叠</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">transformer_encoders</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">([</span>
+            <span class="n">TransformerEncoder</span><span class="p">(</span>
+                <span class="n">intermediate_dim</span><span class="p">,</span>
+                <span class="n">nums_head</span><span class="p">,</span>
+                <span class="n">dropout_rate</span><span class="p">,</span>
+                <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;relu&quot;</span><span class="p">,</span>
+                <span class="n">normalize_first</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+                <span class="n">is_residual</span><span class="o">=</span><span class="kc">True</span>
+            <span class="p">)</span>
+            <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">transformer_blocks</span><span class="p">)</span>
+        <span class="p">])</span>
 
-<span class="c1"># 物品侧Embedding：拼接序列中的物品特征，形成每个位置的物品表示，形状为 [B, max_len, K]</span>
-<span class="n">item_part_embedding</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span>
-    <span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s1">&#39;item_part&#39;</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">flatten</span><span class="o">=</span><span class="kc">False</span>
-<span class="p">)</span>  <span class="c1"># Bxmax_seq_lenxK</span>
+        <span class="c1"># 打分头</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">output_dense</span> <span class="o">=</span> <span class="n">Dense</span><span class="p">(</span><span class="n">intermediate_dim</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s1">&#39;tanh&#39;</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">score_dense</span> <span class="o">=</span> <span class="n">Dense</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
 
-<span class="c1"># 用户对item的个性化Embedding，Item Embedding，形状均为 [B, max_len, D]</span>
-<span class="n">pv_embeddings</span> <span class="o">=</span> <span class="n">input_layer_dict</span><span class="p">[</span><span class="s1">&#39;pv_emb&#39;</span><span class="p">]</span>   <span class="c1"># Bxmax_seq_lenxD</span>
-<span class="n">item_embeddings</span> <span class="o">=</span> <span class="n">input_layer_dict</span><span class="p">[</span><span class="s1">&#39;item_emb&#39;</span><span class="p">]</span>  <span class="c1"># Bxmax_seq_lenxD</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">):</span>
+        <span class="n">group_embedding_feature_dict</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">embedding</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span>
 
-<span class="c1"># 页面级序列表示：将用户上下文、物品侧特征、用户对item的个性化Embedding、Item Embedding拼接</span>
-<span class="n">page_embedding</span> <span class="o">=</span> <span class="n">concat_func</span><span class="p">(</span>
-    <span class="p">[</span><span class="n">user_part_embedding</span><span class="p">,</span> <span class="n">item_part_embedding</span><span class="p">,</span> <span class="n">pv_embeddings</span><span class="p">,</span> <span class="n">item_embeddings</span><span class="p">],</span>
-    <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span>
-<span class="p">)</span>  <span class="c1"># [B, max_len, dim]</span>
+        <span class="c1"># 用户侧Embedding：将用户相关特征的embedding拼接为一个向量，形状为 [B, D]</span>
+        <span class="n">user_part_embedding</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span><span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s1">&#39;user_part&#39;</span><span class="p">)</span>  <span class="c1"># BxD</span>
 
-<span class="c1"># 位置编码：为每个时间步（位置）加入位置信息，帮助 Transformer 捕捉顺序关系</span>
-<span class="n">position_embedding</span> <span class="o">=</span> <span class="n">PositionEncodingLayer</span><span class="p">(</span>
-    <span class="n">dims</span><span class="o">=</span><span class="n">feature_columns</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">emb_dim</span><span class="p">,</span>
-    <span class="n">max_len</span><span class="o">=</span><span class="n">max_seq_len</span><span class="p">,</span>
-    <span class="n">trainable</span><span class="o">=</span><span class="n">pos_emb_trainable</span><span class="p">,</span>
-    <span class="n">initializer</span><span class="o">=</span><span class="s1">&#39;glorot_uniform&#39;</span>
-<span class="p">)(</span><span class="n">page_embedding</span><span class="p">)</span>
+        <span class="c1"># 将用户向量扩展到序列维度，使每个时间步（或位置）都携带同一用户上下文</span>
+        <span class="c1"># x.unsqueeze(1)：在第1维增加一个长度为1的维度 -&gt; [B, 1, D]</span>
+        <span class="c1"># .repeat(1, max_seq_len, 1)：沿序列维复制 max_seq_len 次 -&gt; [B, max_len, D]</span>
+        <span class="n">user_part_embedding</span> <span class="o">=</span> <span class="n">user_part_embedding</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">repeat</span><span class="p">(</span>
+            <span class="mi">1</span><span class="p">,</span> <span class="bp">self</span><span class="o">.</span><span class="n">max_seq_len</span><span class="p">,</span> <span class="mi">1</span>
+        <span class="p">)</span>  <span class="c1"># [B, max_len, D]</span>
 
-<span class="c1"># 将内容编码与位置编码相加，形成 Transformer 的最终输入</span>
-<span class="n">enc_inputs</span> <span class="o">=</span> <span class="n">add_func</span><span class="p">([</span><span class="n">page_embedding</span><span class="p">,</span> <span class="n">position_embedding</span><span class="p">])</span>
+        <span class="c1"># 物品侧Embedding：拼接序列中的物品特征，形成每个位置的物品表示，形状为 [B, max_len, K]</span>
+        <span class="n">item_part_embedding</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span>
+            <span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s1">&#39;item_part&#39;</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">,</span> <span class="n">flatten</span><span class="o">=</span><span class="kc">False</span>
+        <span class="p">)</span>  <span class="c1"># Bxmax_seq_lenxK</span>
 
-<span class="c1"># Transformer 编码层堆叠：</span>
-<span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">transformer_blocks</span><span class="p">):</span>
-    <span class="n">enc_inputs</span> <span class="o">=</span> <span class="n">TransformerEncoder</span><span class="p">(</span>
-        <span class="n">intermediate_dim</span><span class="p">,</span>
-        <span class="n">nums_head</span><span class="p">,</span>
-        <span class="n">dropout_rate</span><span class="p">,</span>
-        <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;relu&quot;</span><span class="p">,</span>
-        <span class="n">normalize_first</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
-        <span class="n">is_residual</span><span class="o">=</span><span class="kc">True</span>
-    <span class="p">)(</span><span class="n">enc_inputs</span><span class="p">)</span>
+        <span class="c1"># 用户对item的个性化Embedding，Item Embedding，形状均为 [B, max_len, D]</span>
+        <span class="n">pv_embeddings</span> <span class="o">=</span> <span class="n">inputs</span><span class="p">[</span><span class="s1">&#39;pv_emb&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>   <span class="c1"># Bxmax_seq_lenxD</span>
+        <span class="n">item_embeddings</span> <span class="o">=</span> <span class="n">inputs</span><span class="p">[</span><span class="s1">&#39;item_emb&#39;</span><span class="p">]</span><span class="o">.</span><span class="n">float</span><span class="p">()</span>  <span class="c1"># Bxmax_seq_lenxD</span>
 
-<span class="c1"># 打分头：对序列中所有位置都映射成一个概率</span>
-<span class="n">enc_output</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Dense</span><span class="p">(</span><span class="n">intermediate_dim</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s1">&#39;tanh&#39;</span><span class="p">)(</span><span class="n">enc_inputs</span><span class="p">)</span>
-<span class="n">enc_output</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Dense</span><span class="p">(</span><span class="mi">1</span><span class="p">)(</span><span class="n">enc_output</span><span class="p">)</span>
-<span class="n">flat</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Flatten</span><span class="p">()(</span><span class="n">enc_output</span><span class="p">)</span>
-<span class="n">score_output</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Activation</span><span class="p">(</span><span class="n">activation</span><span class="o">=</span><span class="s1">&#39;softmax&#39;</span><span class="p">)(</span><span class="n">flat</span><span class="p">)</span>
+        <span class="c1"># 页面级序列表示：将用户上下文、物品侧特征、用户对item的个性化Embedding、Item Embedding拼接</span>
+        <span class="n">page_embedding</span> <span class="o">=</span> <span class="n">concat_func</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">user_part_embedding</span><span class="p">,</span> <span class="n">item_part_embedding</span><span class="p">,</span> <span class="n">pv_embeddings</span><span class="p">,</span> <span class="n">item_embeddings</span><span class="p">],</span>
+            <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span>
+        <span class="p">)</span>  <span class="c1"># [B, max_len, dim]</span>
+
+        <span class="c1"># 将内容编码与位置编码相加，形成 Transformer 的最终输入</span>
+        <span class="n">position_embedding</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">position_encoding</span><span class="p">(</span><span class="n">page_embedding</span><span class="p">)</span>
+        <span class="n">enc_inputs</span> <span class="o">=</span> <span class="n">add_tensor_func</span><span class="p">([</span><span class="n">page_embedding</span><span class="p">,</span> <span class="n">position_embedding</span><span class="p">])</span>
+
+        <span class="c1"># Transformer 编码层堆叠（第一层传入物品序列的padding掩码，略）</span>
+        <span class="k">for</span> <span class="n">encoder</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">transformer_encoders</span><span class="p">:</span>
+            <span class="n">enc_inputs</span> <span class="o">=</span> <span class="n">encoder</span><span class="p">(</span><span class="n">enc_inputs</span><span class="p">)</span>
+
+        <span class="c1"># 打分头：对序列中所有位置都映射成一个概率</span>
+        <span class="n">enc_output</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">output_dense</span><span class="p">(</span><span class="n">enc_inputs</span><span class="p">)</span>  <span class="c1"># [B, max_len, intermediate_dim]</span>
+        <span class="n">enc_output</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">score_dense</span><span class="p">(</span><span class="n">enc_output</span><span class="p">)</span>   <span class="c1"># [B, max_len, 1]</span>
+        <span class="n">flat</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="n">enc_output</span><span class="p">,</span> <span class="n">start_dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, max_len]</span>
+        <span class="n">score_output</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">softmax</span><span class="p">(</span><span class="n">flat</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">score_output</span>
 </pre></div>
 </div>
 <p><strong>代码实践</strong></p>

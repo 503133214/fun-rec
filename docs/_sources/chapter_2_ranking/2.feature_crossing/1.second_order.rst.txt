@@ -88,18 +88,18 @@ FM的核心在于将 :math:`O(n^2)`
    # inputs: [batch_size, field_num, embedding_size]
 
    # 先求和再平方：(∑v_i)^2
-   square_of_sum = tf.square(
-       tf.reduce_sum(inputs, axis=1, keepdims=True)
+   square_of_sum = torch.square(
+       torch.sum(inputs, dim=1, keepdim=True)
    )  # [B, 1, D]
 
    # 先平方再求和：∑(v_i^2)
-   sum_of_square = tf.reduce_sum(
-       inputs * inputs, axis=1, keepdims=True
+   sum_of_square = torch.sum(
+       inputs * inputs, dim=1, keepdim=True
    )  # [B, 1, D]
 
    # FM二阶交互项
-   cross_term = 0.5 * tf.reduce_sum(
-       square_of_sum - sum_of_square, axis=2
+   cross_term = 0.5 * torch.sum(
+       square_of_sum - sum_of_square, dim=2
    )  # [B, 1]
 
 这个实现的巧妙之处在于，无论有多少特征，计算复杂度始终保持线性，使得FM能够处理推荐系统中常见的高维稀疏特征。
@@ -187,19 +187,19 @@ AFM的关键在于注意力池化层，它为每个特征交叉对分配不同�
    )
 
    # 2. 注意力权重计算：h^T · ReLU(W · (v_i ⊙ v_j) + b)
-   weighted_inputs = tf.matmul(
+   weighted_inputs = torch.matmul(
        group_pairwise, attention_weight
    ) + attention_bias  # [B, num_pairs, attention_factor]
 
-   activation = tf.nn.relu(weighted_inputs)
-   projected = tf.matmul(activation, attention_projection)  # [B, num_pairs, 1]
+   activation = F.relu(weighted_inputs)
+   projected = torch.matmul(activation, attention_projection)  # [B, num_pairs, 1]
 
    # 3. Softmax归一化得到注意力权重
-   attention_weights = tf.nn.softmax(projected, axis=1)
+   attention_weights = torch.softmax(projected, dim=1)
 
    # 4. 加权求和：∑ a_ij · (v_i ⊙ v_j)
-   attention_output = tf.reduce_sum(
-       tf.multiply(group_pairwise, attention_weights), axis=1
+   attention_output = torch.sum(
+       group_pairwise * attention_weights, dim=1
    )  # [B, D]
 
 相比FM对所有特征交叉一视同仁，AFM通过注意力机制自动识别重要的交互模式，提升了模型的表达能力和可解释性。
@@ -257,20 +257,19 @@ NFM的双交互池化层将所有特征对的交叉信息压缩为一个固定�
    # inputs: [batch_size, num_features, embedding_dim]
 
    # (∑v_i)^2：先求和再平方
-   sum_of_embeds = tf.reduce_sum(inputs, axis=1)  # [B, D]
-   square_of_sum = tf.square(sum_of_embeds)  # [B, D]
+   sum_of_embeds = torch.sum(inputs, dim=1)  # [B, D]
+   square_of_sum = torch.square(sum_of_embeds)  # [B, D]
 
    # ∑(v_i^2)：先平方再求和
-   square_of_embeds = tf.square(inputs)  # [B, N, D]
-   sum_of_square = tf.reduce_sum(square_of_embeds, axis=1)  # [B, D]
+   square_of_embeds = torch.square(inputs)  # [B, N, D]
+   sum_of_square = torch.sum(square_of_embeds, dim=1)  # [B, D]
 
    # 双交互池化输出
    bi_interaction = 0.5 * (square_of_sum - sum_of_square)  # [B, D]
 
-   # 送入深度神经网络
-   dnn_output = DNNs(
-       units=[64, 32], activation="relu", use_bn=True, dropout_rate=0.1
-   )(bi_interaction)
+   # 送入深度神经网络（在 __init__ 中定义）：
+   # self.dnn = DNNs(units=[64, 32], activation="relu", use_bn=True, dropout_rate=0.1)
+   dnn_output = self.dnn(bi_interaction)
 
 NFM的关键创新在于将FM的二阶交叉信息作为DNN的输入，使得模型既能捕捉特征间的交互，又能学习高阶非线性关系。
 
@@ -375,25 +374,20 @@ PNN通过内积和外积两种方式计算特征交互。以IPNN的优化实现�
 .. code:: python
 
    # 线性信号：直接对特征embedding做全连接
-   concat_embed = tf.concat(inputs, axis=1)  # [B, N*D]
-   lz = tf.matmul(concat_embed, linear_w)  # [B, units]
+   concat_embed = torch.cat(inputs, dim=1)  # [B, N, D]
+   concat_embed_ = concat_embed.reshape(-1, N * D)  # [B, N*D]
+   lz = torch.matmul(concat_embed_, linear_w)  # [B, units]
 
    # 内积优化：||∑(θ_i · f_i)||^2 代替 ∑∑<θ_i·f_i, θ_j·f_j>
-   lp_list = []
-   for i in range(units):
-       # 对每个特征加权：θ_i · f_i
-       delta = tf.multiply(
-           concat_embed, tf.expand_dims(inner_w[i], axis=1)
-       )  # [B, N, D]
-       
-       # 求和后计算L2范数平方：||∑(θ_i · f_i)||^2
-       delta = tf.reduce_sum(delta, axis=1)  # [B, D]
-       lp_i = tf.reduce_sum(tf.square(delta), axis=1, keepdims=True)  # [B, 1]
-       lp_list.append(lp_i)
+   # inner_w: [units, N]，对所有 units 一次性计算
+   # 对每个特征加权并在特征维度上求和：∑(θ_i · f_i)
+   delta = torch.einsum("bnd,un->bud", concat_embed, inner_w)  # [B, units, D]
+
+   # 计算L2范数平方：||∑(θ_i · f_i)||^2
+   lp = torch.sum(delta * delta, dim=-1)  # [B, units]
 
    # 拼接线性信号和内积信号
-   lp = tf.concat(lp_list, axis=1)  # [B, units]
-   product_output = tf.concat([lz, lp], axis=1)  # [B, 2*units]
+   product_output = torch.cat([lz, lp], dim=1)  # [B, 2*units]
 
 通过矩阵分解技巧，PNN将内积计算从 :math:`O(N^2M)` 优化到
 :math:`O(NM)`\ ，使得模型能够高效处理大规模特征交互。
@@ -488,27 +482,26 @@ FiBiNET的实现包含两个关键部分：SENET特征重要性学习和双线�
    # inputs: [batch_size, num_features, embedding_dim]
 
    # Squeeze：全局平均池化
-   squeeze = tf.reduce_mean(inputs, axis=-1)  # [B, N]
+   squeeze = torch.mean(inputs, dim=-1)  # [B, N]
 
    # Excitation：两层全连接网络
-   excitation = tf.matmul(squeeze, w1)  # [B, reduction_size]
-   excitation = tf.nn.relu(excitation)
-   excitation = tf.matmul(excitation, w2)  # [B, N]
-   excitation = tf.nn.sigmoid(excitation)
+   excitation = torch.matmul(squeeze, w1)  # [B, reduction_size]
+   excitation = F.relu(excitation)
+   excitation = torch.matmul(excitation, w2)  # [B, N]
+   excitation = torch.sigmoid(excitation)
 
    # Re-weight：应用注意力权重
-   excitation = tf.expand_dims(excitation, axis=2)  # [B, N, 1]
-   senet_output = tf.multiply(inputs, excitation)  # [B, N, D]
+   excitation = excitation.unsqueeze(2)  # [B, N, 1]
+   senet_output = inputs * excitation  # [B, N, D]
 
    # 2. 双线性交互：v_i · W ⊙ v_j
    interaction_outputs = []
-   for i in range(num_features):
-       for j in range(i+1, num_features):
-           # 对特征i应用变换矩阵
-           vi_transformed = tf.matmul(inputs[:, i, :], W_list[idx])  # [B, D]
-           # 与特征j做元素积
-           interaction = tf.multiply(vi_transformed, inputs[:, j, :])  # [B, D]
-           interaction_outputs.append(interaction)
+   for idx, (i, j) in enumerate(pairs):  # pairs: 所有 (i, j) 且 i < j 的特征对
+       # 对特征i应用变换矩阵
+       vi_transformed = torch.matmul(inputs[:, i, :], W_list[idx])  # [B, D]
+       # 与特征j做元素积
+       interaction = vi_transformed * inputs[:, j, :]  # [B, D]
+       interaction_outputs.append(interaction)
 
 FiBiNET通过SENET动态调整特征重要性，通过双线性变换增强特征交互的表达能力，相比传统方法更加灵活和高效。
 
@@ -592,21 +585,22 @@ DeepFM的关键在于FM和DNN两个组件共享同一套Embedding，各自负责
        group_embedding_feature_dict, group_name, axis=1, flatten=False
    )
 
+   # 各组件在 __init__ 中定义：
+   # self.fm = FM()
+   # self.dnn = DNNs(units=[64, 32, 1], activation="relu", dropout_rate=0.1)
+   # self.deepfm_output = Dense(1, activation="sigmoid")
+
    # 1. FM组件：学习二阶特征交叉
-   fm_output = FM()(concat_feature)  # [B, 1]
+   fm_output = self.fm(concat_feature)  # [B, 1]
 
    # 2. DNN组件：学习高阶非线性特征交叉
    # 将embedding展平作为DNN输入
-   flatten_feature = tf.keras.layers.Flatten()(concat_feature)  # [B, N*D]
-   dnn_output = DNNs(
-       units=[64, 32, 1],  # 多层神经网络
-       activation="relu",
-       dropout_rate=0.1
-   )(flatten_feature)  # [B, 1]
+   flatten_feature = torch.flatten(concat_feature, start_dim=1)  # [B, N*D]
+   dnn_output = self.dnn(flatten_feature)  # [B, 1]
 
    # 3. 联合训练：将FM和DNN的输出相加
-   deepfm_logits = tf.add(fm_output, dnn_output)  # [B, 1]
-   output = tf.keras.layers.Dense(1, activation="sigmoid")(deepfm_logits)
+   deepfm_logits = fm_output + dnn_output  # [B, 1]
+   output = self.deepfm_output(deepfm_logits)
 
 DeepFM通过共享Embedding实现了端到端训练，FM组件捕捉低阶交叉，DNN组件学习高阶模式，两者互补形成高效的特征学习能力。
 

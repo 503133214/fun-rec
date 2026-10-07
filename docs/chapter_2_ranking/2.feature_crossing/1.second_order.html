@@ -434,18 +434,18 @@ Show Source
 <span class="c1"># inputs: [batch_size, field_num, embedding_size]</span>
 
 <span class="c1"># 先求和再平方：(∑v_i)^2</span>
-<span class="n">square_of_sum</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">square</span><span class="p">(</span>
-    <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="n">square_of_sum</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">square</span><span class="p">(</span>
+    <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 <span class="p">)</span>  <span class="c1"># [B, 1, D]</span>
 
 <span class="c1"># 先平方再求和：∑(v_i^2)</span>
-<span class="n">sum_of_square</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span>
-    <span class="n">inputs</span> <span class="o">*</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span>
+<span class="n">sum_of_square</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span>
+    <span class="n">inputs</span> <span class="o">*</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span>
 <span class="p">)</span>  <span class="c1"># [B, 1, D]</span>
 
 <span class="c1"># FM二阶交互项</span>
-<span class="n">cross_term</span> <span class="o">=</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span>
-    <span class="n">square_of_sum</span> <span class="o">-</span> <span class="n">sum_of_square</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">2</span>
+<span class="n">cross_term</span> <span class="o">=</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span>
+    <span class="n">square_of_sum</span> <span class="o">-</span> <span class="n">sum_of_square</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">2</span>
 <span class="p">)</span>  <span class="c1"># [B, 1]</span>
 </pre></div>
 </div>
@@ -504,19 +504,19 @@ Pooling）。</p>
 <span class="p">)</span>
 
 <span class="c1"># 2. 注意力权重计算：h^T · ReLU(W · (v_i ⊙ v_j) + b)</span>
-<span class="n">weighted_inputs</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span>
+<span class="n">weighted_inputs</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span>
     <span class="n">group_pairwise</span><span class="p">,</span> <span class="n">attention_weight</span>
 <span class="p">)</span> <span class="o">+</span> <span class="n">attention_bias</span>  <span class="c1"># [B, num_pairs, attention_factor]</span>
 
-<span class="n">activation</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">relu</span><span class="p">(</span><span class="n">weighted_inputs</span><span class="p">)</span>
-<span class="n">projected</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">activation</span><span class="p">,</span> <span class="n">attention_projection</span><span class="p">)</span>  <span class="c1"># [B, num_pairs, 1]</span>
+<span class="n">activation</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">relu</span><span class="p">(</span><span class="n">weighted_inputs</span><span class="p">)</span>
+<span class="n">projected</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">activation</span><span class="p">,</span> <span class="n">attention_projection</span><span class="p">)</span>  <span class="c1"># [B, num_pairs, 1]</span>
 
 <span class="c1"># 3. Softmax归一化得到注意力权重</span>
-<span class="n">attention_weights</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">softmax</span><span class="p">(</span><span class="n">projected</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">attention_weights</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">softmax</span><span class="p">(</span><span class="n">projected</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
 
 <span class="c1"># 4. 加权求和：∑ a_ij · (v_i ⊙ v_j)</span>
-<span class="n">attention_output</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span>
-    <span class="n">tf</span><span class="o">.</span><span class="n">multiply</span><span class="p">(</span><span class="n">group_pairwise</span><span class="p">,</span> <span class="n">attention_weights</span><span class="p">),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span>
+<span class="n">attention_output</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span>
+    <span class="n">group_pairwise</span> <span class="o">*</span> <span class="n">attention_weights</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span>
 <span class="p">)</span>  <span class="c1"># [B, D]</span>
 </pre></div>
 </div>
@@ -560,20 +560,19 @@ Layer），这一层的作用很直接——把所有特征对的交叉信息汇
 <span class="c1"># inputs: [batch_size, num_features, embedding_dim]</span>
 
 <span class="c1"># (∑v_i)^2：先求和再平方</span>
-<span class="n">sum_of_embeds</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, D]</span>
-<span class="n">square_of_sum</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">square</span><span class="p">(</span><span class="n">sum_of_embeds</span><span class="p">)</span>  <span class="c1"># [B, D]</span>
+<span class="n">sum_of_embeds</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, D]</span>
+<span class="n">square_of_sum</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">square</span><span class="p">(</span><span class="n">sum_of_embeds</span><span class="p">)</span>  <span class="c1"># [B, D]</span>
 
 <span class="c1"># ∑(v_i^2)：先平方再求和</span>
-<span class="n">square_of_embeds</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">square</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span>  <span class="c1"># [B, N, D]</span>
-<span class="n">sum_of_square</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span><span class="n">square_of_embeds</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, D]</span>
+<span class="n">square_of_embeds</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">square</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span>  <span class="c1"># [B, N, D]</span>
+<span class="n">sum_of_square</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">square_of_embeds</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, D]</span>
 
 <span class="c1"># 双交互池化输出</span>
 <span class="n">bi_interaction</span> <span class="o">=</span> <span class="mf">0.5</span> <span class="o">*</span> <span class="p">(</span><span class="n">square_of_sum</span> <span class="o">-</span> <span class="n">sum_of_square</span><span class="p">)</span>  <span class="c1"># [B, D]</span>
 
-<span class="c1"># 送入深度神经网络</span>
-<span class="n">dnn_output</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span>
-    <span class="n">units</span><span class="o">=</span><span class="p">[</span><span class="mi">64</span><span class="p">,</span> <span class="mi">32</span><span class="p">],</span> <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;relu&quot;</span><span class="p">,</span> <span class="n">use_bn</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">dropout_rate</span><span class="o">=</span><span class="mf">0.1</span>
-<span class="p">)(</span><span class="n">bi_interaction</span><span class="p">)</span>
+<span class="c1"># 送入深度神经网络（在 __init__ 中定义）：</span>
+<span class="c1"># self.dnn = DNNs(units=[64, 32], activation=&quot;relu&quot;, use_bn=True, dropout_rate=0.1)</span>
+<span class="n">dnn_output</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">dnn</span><span class="p">(</span><span class="n">bi_interaction</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>NFM的关键创新在于将FM的二阶交叉信息作为DNN的输入，使得模型既能捕捉特征间的交互，又能学习高阶非线性关系。</p>
@@ -651,25 +650,20 @@ DNN 中简单的“加法”操作更能有效地捕捉类别型特征之间的�
 <p><strong>核心代码</strong></p>
 <p>PNN通过内积和外积两种方式计算特征交互。以IPNN的优化实现为例：</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 线性信号：直接对特征embedding做全连接</span>
-<span class="n">concat_embed</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">concat</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, N*D]</span>
-<span class="n">lz</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">concat_embed</span><span class="p">,</span> <span class="n">linear_w</span><span class="p">)</span>  <span class="c1"># [B, units]</span>
+<span class="n">concat_embed</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, N, D]</span>
+<span class="n">concat_embed_</span> <span class="o">=</span> <span class="n">concat_embed</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">N</span> <span class="o">*</span> <span class="n">D</span><span class="p">)</span>  <span class="c1"># [B, N*D]</span>
+<span class="n">lz</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">concat_embed_</span><span class="p">,</span> <span class="n">linear_w</span><span class="p">)</span>  <span class="c1"># [B, units]</span>
 
 <span class="c1"># 内积优化：||∑(θ_i · f_i)||^2 代替 ∑∑&lt;θ_i·f_i, θ_j·f_j&gt;</span>
-<span class="n">lp_list</span> <span class="o">=</span> <span class="p">[]</span>
-<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">units</span><span class="p">):</span>
-    <span class="c1"># 对每个特征加权：θ_i · f_i</span>
-    <span class="n">delta</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">multiply</span><span class="p">(</span>
-        <span class="n">concat_embed</span><span class="p">,</span> <span class="n">tf</span><span class="o">.</span><span class="n">expand_dims</span><span class="p">(</span><span class="n">inner_w</span><span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
-    <span class="p">)</span>  <span class="c1"># [B, N, D]</span>
+<span class="c1"># inner_w: [units, N]，对所有 units 一次性计算</span>
+<span class="c1"># 对每个特征加权并在特征维度上求和：∑(θ_i · f_i)</span>
+<span class="n">delta</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s2">&quot;bnd,un-&gt;bud&quot;</span><span class="p">,</span> <span class="n">concat_embed</span><span class="p">,</span> <span class="n">inner_w</span><span class="p">)</span>  <span class="c1"># [B, units, D]</span>
 
-    <span class="c1"># 求和后计算L2范数平方：||∑(θ_i · f_i)||^2</span>
-    <span class="n">delta</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span><span class="n">delta</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, D]</span>
-    <span class="n">lp_i</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span><span class="n">tf</span><span class="o">.</span><span class="n">square</span><span class="p">(</span><span class="n">delta</span><span class="p">),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>  <span class="c1"># [B, 1]</span>
-    <span class="n">lp_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">lp_i</span><span class="p">)</span>
+<span class="c1"># 计算L2范数平方：||∑(θ_i · f_i)||^2</span>
+<span class="n">lp</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">delta</span> <span class="o">*</span> <span class="n">delta</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, units]</span>
 
 <span class="c1"># 拼接线性信号和内积信号</span>
-<span class="n">lp</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">concat</span><span class="p">(</span><span class="n">lp_list</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, units]</span>
-<span class="n">product_output</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">concat</span><span class="p">([</span><span class="n">lz</span><span class="p">,</span> <span class="n">lp</span><span class="p">],</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, 2*units]</span>
+<span class="n">product_output</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">([</span><span class="n">lz</span><span class="p">,</span> <span class="n">lp</span><span class="p">],</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, 2*units]</span>
 </pre></div>
 </div>
 <p>通过矩阵分解技巧，PNN将内积计算从 <span class="math notranslate nohighlight">\(O(N^2M)\)</span> 优化到
@@ -742,27 +736,26 @@ Network)</strong> <span id="id6">(<a class="reference internal" href="../../chap
 <span class="c1"># inputs: [batch_size, num_features, embedding_dim]</span>
 
 <span class="c1"># Squeeze：全局平均池化</span>
-<span class="n">squeeze</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_mean</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, N]</span>
+<span class="n">squeeze</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">dim</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, N]</span>
 
 <span class="c1"># Excitation：两层全连接网络</span>
-<span class="n">excitation</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">squeeze</span><span class="p">,</span> <span class="n">w1</span><span class="p">)</span>  <span class="c1"># [B, reduction_size]</span>
-<span class="n">excitation</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">relu</span><span class="p">(</span><span class="n">excitation</span><span class="p">)</span>
-<span class="n">excitation</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">excitation</span><span class="p">,</span> <span class="n">w2</span><span class="p">)</span>  <span class="c1"># [B, N]</span>
-<span class="n">excitation</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">sigmoid</span><span class="p">(</span><span class="n">excitation</span><span class="p">)</span>
+<span class="n">excitation</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">squeeze</span><span class="p">,</span> <span class="n">w1</span><span class="p">)</span>  <span class="c1"># [B, reduction_size]</span>
+<span class="n">excitation</span> <span class="o">=</span> <span class="n">F</span><span class="o">.</span><span class="n">relu</span><span class="p">(</span><span class="n">excitation</span><span class="p">)</span>
+<span class="n">excitation</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">excitation</span><span class="p">,</span> <span class="n">w2</span><span class="p">)</span>  <span class="c1"># [B, N]</span>
+<span class="n">excitation</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sigmoid</span><span class="p">(</span><span class="n">excitation</span><span class="p">)</span>
 
 <span class="c1"># Re-weight：应用注意力权重</span>
-<span class="n">excitation</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">expand_dims</span><span class="p">(</span><span class="n">excitation</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>  <span class="c1"># [B, N, 1]</span>
-<span class="n">senet_output</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">multiply</span><span class="p">(</span><span class="n">inputs</span><span class="p">,</span> <span class="n">excitation</span><span class="p">)</span>  <span class="c1"># [B, N, D]</span>
+<span class="n">excitation</span> <span class="o">=</span> <span class="n">excitation</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="mi">2</span><span class="p">)</span>  <span class="c1"># [B, N, 1]</span>
+<span class="n">senet_output</span> <span class="o">=</span> <span class="n">inputs</span> <span class="o">*</span> <span class="n">excitation</span>  <span class="c1"># [B, N, D]</span>
 
 <span class="c1"># 2. 双线性交互：v_i · W ⊙ v_j</span>
 <span class="n">interaction_outputs</span> <span class="o">=</span> <span class="p">[]</span>
-<span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_features</span><span class="p">):</span>
-    <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">i</span><span class="o">+</span><span class="mi">1</span><span class="p">,</span> <span class="n">num_features</span><span class="p">):</span>
-        <span class="c1"># 对特征i应用变换矩阵</span>
-        <span class="n">vi_transformed</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">inputs</span><span class="p">[:,</span> <span class="n">i</span><span class="p">,</span> <span class="p">:],</span> <span class="n">W_list</span><span class="p">[</span><span class="n">idx</span><span class="p">])</span>  <span class="c1"># [B, D]</span>
-        <span class="c1"># 与特征j做元素积</span>
-        <span class="n">interaction</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">multiply</span><span class="p">(</span><span class="n">vi_transformed</span><span class="p">,</span> <span class="n">inputs</span><span class="p">[:,</span> <span class="n">j</span><span class="p">,</span> <span class="p">:])</span>  <span class="c1"># [B, D]</span>
-        <span class="n">interaction_outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">interaction</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">idx</span><span class="p">,</span> <span class="p">(</span><span class="n">i</span><span class="p">,</span> <span class="n">j</span><span class="p">)</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">pairs</span><span class="p">):</span>  <span class="c1"># pairs: 所有 (i, j) 且 i &lt; j 的特征对</span>
+    <span class="c1"># 对特征i应用变换矩阵</span>
+    <span class="n">vi_transformed</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">matmul</span><span class="p">(</span><span class="n">inputs</span><span class="p">[:,</span> <span class="n">i</span><span class="p">,</span> <span class="p">:],</span> <span class="n">W_list</span><span class="p">[</span><span class="n">idx</span><span class="p">])</span>  <span class="c1"># [B, D]</span>
+    <span class="c1"># 与特征j做元素积</span>
+    <span class="n">interaction</span> <span class="o">=</span> <span class="n">vi_transformed</span> <span class="o">*</span> <span class="n">inputs</span><span class="p">[:,</span> <span class="n">j</span><span class="p">,</span> <span class="p">:]</span>  <span class="c1"># [B, D]</span>
+    <span class="n">interaction_outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">interaction</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>FiBiNET通过SENET动态调整特征重要性，通过双线性变换增强特征交互的表达能力，相比传统方法更加灵活和高效。</p>
@@ -826,21 +819,22 @@ Wide &amp; Deep 需要专家手工构造 Wide 部分的特征，DeepFM 用 FM
     <span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="n">group_name</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">flatten</span><span class="o">=</span><span class="kc">False</span>
 <span class="p">)</span>
 
+<span class="c1"># 各组件在 __init__ 中定义：</span>
+<span class="c1"># self.fm = FM()</span>
+<span class="c1"># self.dnn = DNNs(units=[64, 32, 1], activation=&quot;relu&quot;, dropout_rate=0.1)</span>
+<span class="c1"># self.deepfm_output = Dense(1, activation=&quot;sigmoid&quot;)</span>
+
 <span class="c1"># 1. FM组件：学习二阶特征交叉</span>
-<span class="n">fm_output</span> <span class="o">=</span> <span class="n">FM</span><span class="p">()(</span><span class="n">concat_feature</span><span class="p">)</span>  <span class="c1"># [B, 1]</span>
+<span class="n">fm_output</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fm</span><span class="p">(</span><span class="n">concat_feature</span><span class="p">)</span>  <span class="c1"># [B, 1]</span>
 
 <span class="c1"># 2. DNN组件：学习高阶非线性特征交叉</span>
 <span class="c1"># 将embedding展平作为DNN输入</span>
-<span class="n">flatten_feature</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Flatten</span><span class="p">()(</span><span class="n">concat_feature</span><span class="p">)</span>  <span class="c1"># [B, N*D]</span>
-<span class="n">dnn_output</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span>
-    <span class="n">units</span><span class="o">=</span><span class="p">[</span><span class="mi">64</span><span class="p">,</span> <span class="mi">32</span><span class="p">,</span> <span class="mi">1</span><span class="p">],</span>  <span class="c1"># 多层神经网络</span>
-    <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;relu&quot;</span><span class="p">,</span>
-    <span class="n">dropout_rate</span><span class="o">=</span><span class="mf">0.1</span>
-<span class="p">)(</span><span class="n">flatten_feature</span><span class="p">)</span>  <span class="c1"># [B, 1]</span>
+<span class="n">flatten_feature</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">flatten</span><span class="p">(</span><span class="n">concat_feature</span><span class="p">,</span> <span class="n">start_dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, N*D]</span>
+<span class="n">dnn_output</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">dnn</span><span class="p">(</span><span class="n">flatten_feature</span><span class="p">)</span>  <span class="c1"># [B, 1]</span>
 
 <span class="c1"># 3. 联合训练：将FM和DNN的输出相加</span>
-<span class="n">deepfm_logits</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">add</span><span class="p">(</span><span class="n">fm_output</span><span class="p">,</span> <span class="n">dnn_output</span><span class="p">)</span>  <span class="c1"># [B, 1]</span>
-<span class="n">output</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Dense</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;sigmoid&quot;</span><span class="p">)(</span><span class="n">deepfm_logits</span><span class="p">)</span>
+<span class="n">deepfm_logits</span> <span class="o">=</span> <span class="n">fm_output</span> <span class="o">+</span> <span class="n">dnn_output</span>  <span class="c1"># [B, 1]</span>
+<span class="n">output</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">deepfm_output</span><span class="p">(</span><span class="n">deepfm_logits</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>DeepFM通过共享Embedding实现了端到端训练，FM组件捕捉低阶交叉，DNN组件学习高阶模式，两者互补形成高效的特征学习能力。</p>

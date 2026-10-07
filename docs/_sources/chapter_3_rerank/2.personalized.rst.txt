@@ -119,61 +119,83 @@ PRM核心代码如下：
 
 .. code:: python
 
-   # 模型输入层
-   input_layer_dict = build_input_layer(feature_columns)
+   class PRMModel(FunRecModel):
+       def __init__(self, feature_columns, max_seq_len, transformer_blocks, nums_head,
+                    dropout_rate, intermediate_dim, pos_emb_trainable):
+           # 模型输入层
+           input_layer_dict = build_input_layer(feature_columns)
+           super().__init__(input_names=list(input_layer_dict.keys()), name="prm")
+           self.max_seq_len = max_seq_len
+           # 特征Embedding层：按group返回各组特征的embedding
+           self.embedding = FeatureEmbedding(feature_columns, prefix="embedding/")
 
-   # 用户侧Embedding：将用户相关特征的embedding拼接为一个向量，形状为 [B, D]
-   user_part_embedding = concat_group_embedding(group_embedding_feature_dict, 'user_part')  # BxD
+           # 位置编码：为每个时间步（位置）加入位置信息，帮助 Transformer 捕捉顺序关系
+           self.position_encoding = PositionEncodingLayer(
+               dims=feature_columns[0].emb_dim,
+               max_len=max_seq_len,
+               trainable=pos_emb_trainable,
+               initializer='glorot_uniform'
+           )
 
-   # 将用户向量扩展到序列维度，使每个时间步（或位置）都携带同一用户上下文
-   # tf.expand_dims(x, axis=1)：在第1维增加一个长度为1的维度 -> [B, 1, D]
-   # tf.tile(..., [1, max_seq_len, 1])：沿序列维复制 max_seq_len 次 -> [B, max_len, D]
-   user_part_embedding = tf.keras.layers.Lambda(
-       lambda x: tf.tile(tf.expand_dims(x, axis=1), [1, max_seq_len, 1])
-   )(user_part_embedding)  # [B, max_len, D]
+           # Transformer 编码层堆叠
+           self.transformer_encoders = nn.ModuleList([
+               TransformerEncoder(
+                   intermediate_dim,
+                   nums_head,
+                   dropout_rate,
+                   activation="relu",
+                   normalize_first=True,
+                   is_residual=True
+               )
+               for _ in range(transformer_blocks)
+           ])
 
-   # 物品侧Embedding：拼接序列中的物品特征，形成每个位置的物品表示，形状为 [B, max_len, K]
-   item_part_embedding = concat_group_embedding(
-       group_embedding_feature_dict, 'item_part', axis=-1, flatten=False
-   )  # Bxmax_seq_lenxK
+           # 打分头
+           self.output_dense = Dense(intermediate_dim, activation='tanh')
+           self.score_dense = Dense(1)
 
-   # 用户对item的个性化Embedding，Item Embedding，形状均为 [B, max_len, D]
-   pv_embeddings = input_layer_dict['pv_emb']   # Bxmax_seq_lenxD
-   item_embeddings = input_layer_dict['item_emb']  # Bxmax_seq_lenxD
+       def forward(self, inputs):
+           group_embedding_feature_dict = self.embedding(inputs)
 
-   # 页面级序列表示：将用户上下文、物品侧特征、用户对item的个性化Embedding、Item Embedding拼接
-   page_embedding = concat_func(
-       [user_part_embedding, item_part_embedding, pv_embeddings, item_embeddings],
-       axis=-1
-   )  # [B, max_len, dim]
+           # 用户侧Embedding：将用户相关特征的embedding拼接为一个向量，形状为 [B, D]
+           user_part_embedding = concat_group_embedding(group_embedding_feature_dict, 'user_part')  # BxD
 
-   # 位置编码：为每个时间步（位置）加入位置信息，帮助 Transformer 捕捉顺序关系
-   position_embedding = PositionEncodingLayer(
-       dims=feature_columns[0].emb_dim,
-       max_len=max_seq_len,
-       trainable=pos_emb_trainable,
-       initializer='glorot_uniform'
-   )(page_embedding)
+           # 将用户向量扩展到序列维度，使每个时间步（或位置）都携带同一用户上下文
+           # x.unsqueeze(1)：在第1维增加一个长度为1的维度 -> [B, 1, D]
+           # .repeat(1, max_seq_len, 1)：沿序列维复制 max_seq_len 次 -> [B, max_len, D]
+           user_part_embedding = user_part_embedding.unsqueeze(1).repeat(
+               1, self.max_seq_len, 1
+           )  # [B, max_len, D]
 
-   # 将内容编码与位置编码相加，形成 Transformer 的最终输入
-   enc_inputs = add_func([page_embedding, position_embedding])
+           # 物品侧Embedding：拼接序列中的物品特征，形成每个位置的物品表示，形状为 [B, max_len, K]
+           item_part_embedding = concat_group_embedding(
+               group_embedding_feature_dict, 'item_part', axis=-1, flatten=False
+           )  # Bxmax_seq_lenxK
 
-   # Transformer 编码层堆叠：
-   for _ in range(transformer_blocks):
-       enc_inputs = TransformerEncoder(
-           intermediate_dim,
-           nums_head,
-           dropout_rate,
-           activation="relu",
-           normalize_first=True,
-           is_residual=True
-       )(enc_inputs)
+           # 用户对item的个性化Embedding，Item Embedding，形状均为 [B, max_len, D]
+           pv_embeddings = inputs['pv_emb'].float()   # Bxmax_seq_lenxD
+           item_embeddings = inputs['item_emb'].float()  # Bxmax_seq_lenxD
 
-   # 打分头：对序列中所有位置都映射成一个概率
-   enc_output = tf.keras.layers.Dense(intermediate_dim, activation='tanh')(enc_inputs)
-   enc_output = tf.keras.layers.Dense(1)(enc_output)
-   flat = tf.keras.layers.Flatten()(enc_output)
-   score_output = tf.keras.layers.Activation(activation='softmax')(flat)
+           # 页面级序列表示：将用户上下文、物品侧特征、用户对item的个性化Embedding、Item Embedding拼接
+           page_embedding = concat_func(
+               [user_part_embedding, item_part_embedding, pv_embeddings, item_embeddings],
+               axis=-1
+           )  # [B, max_len, dim]
+
+           # 将内容编码与位置编码相加，形成 Transformer 的最终输入
+           position_embedding = self.position_encoding(page_embedding)
+           enc_inputs = add_tensor_func([page_embedding, position_embedding])
+
+           # Transformer 编码层堆叠（第一层传入物品序列的padding掩码，略）
+           for encoder in self.transformer_encoders:
+               enc_inputs = encoder(enc_inputs)
+
+           # 打分头：对序列中所有位置都映射成一个概率
+           enc_output = self.output_dense(enc_inputs)  # [B, max_len, intermediate_dim]
+           enc_output = self.score_dense(enc_output)   # [B, max_len, 1]
+           flat = torch.flatten(enc_output, start_dim=1)  # [B, max_len]
+           score_output = torch.softmax(flat, dim=-1)
+           return score_output
 
 
 

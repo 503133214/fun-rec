@@ -424,28 +424,28 @@ Show Source
 <section id="id4">
 <h2><span class="section-number">2.2.3.3. </span>代码实践<a class="headerlink" href="#id4" title="Permalink to this heading">¶</a></h2>
 <p>EGES的核心在于商品特定注意力层（ItemSpecificAttentionLayer），它为每个商品学习一组特征权重：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">call</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">item_indices</span><span class="p">):</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">,</span> <span class="n">item_indices</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;</span>
 <span class="sd">    参数:</span>
 <span class="sd">        inputs: 特征嵌入 [batch_size, n+1, emb_dim]</span>
 <span class="sd">        item_indices: 商品索引 [batch_size]</span>
 <span class="sd">    &quot;&quot;&quot;</span>
     <span class="c1"># 获取每个商品对应的权重参数 a_v^j</span>
-    <span class="n">batch_attention_weights</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">gather</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">attention_weights</span><span class="p">,</span> <span class="n">item_indices</span><span class="p">)</span>
+    <span class="n">batch_attention_weights</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">attention_weights</span><span class="p">[</span><span class="n">item_indices</span><span class="o">.</span><span class="n">long</span><span class="p">()]</span>
 
     <span class="c1"># 计算 e^(a_v^j)</span>
-    <span class="n">exp_attention</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">batch_attention_weights</span><span class="p">)</span>  <span class="c1"># [batch_size, n+1]</span>
+    <span class="n">exp_attention</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">exp</span><span class="p">(</span><span class="n">batch_attention_weights</span><span class="p">)</span>  <span class="c1"># [batch_size, n+1]</span>
 
     <span class="c1"># 归一化权重: e^(a_v^j) / sum(e^(a_v^j))</span>
-    <span class="n">attention_sum</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span><span class="n">exp_attention</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdims</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="n">attention_sum</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">exp_attention</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
     <span class="n">normalized_attention</span> <span class="o">=</span> <span class="n">exp_attention</span> <span class="o">/</span> <span class="n">attention_sum</span>
 
     <span class="c1"># 应用权重到特征嵌入</span>
-    <span class="n">normalized_attention</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">expand_dims</span><span class="p">(</span><span class="n">normalized_attention</span><span class="p">,</span> <span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
+    <span class="n">normalized_attention</span> <span class="o">=</span> <span class="n">normalized_attention</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span>
     <span class="n">weighted_embedding</span> <span class="o">=</span> <span class="n">inputs</span> <span class="o">*</span> <span class="n">normalized_attention</span>  <span class="c1"># [batch_size, n+1, emb_dim]</span>
 
     <span class="c1"># 求和得到最终的商品表示 H_v</span>
-    <span class="n">output</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">reduce_sum</span><span class="p">(</span><span class="n">weighted_embedding</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [batch_size, emb_dim]</span>
+    <span class="n">output</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">weighted_embedding</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [batch_size, emb_dim]</span>
 
     <span class="k">return</span> <span class="n">output</span><span class="p">,</span> <span class="n">normalized_attention</span>
 </pre></div>

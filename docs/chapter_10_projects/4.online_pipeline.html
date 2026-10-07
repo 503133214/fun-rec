@@ -974,7 +974,7 @@ movie_id、genres、isAdult、startYear 等，每个候选各不相同。</p>
     <span class="k">return</span> <span class="n">ranked_results</span>
 </pre></div>
 </div>
-<p>批量预测相比逐个预测有显著的性能优势。TensorFlow
+<p>批量预测相比逐个预测有显著的性能优势。PyTorch
 在批量推理时可以更好地利用 CPU 的向量化指令或 GPU 的并行计算能力。对于
 100 个候选的批量预测，耗时通常在 10-30 毫秒。</p>
 </section>
@@ -1272,7 +1272,9 @@ HTTP 接口。</p>
 <h3><span class="section-number">10.4.6.2. </span>资源加载与单例模式<a class="headerlink" href="#id18" title="Permalink to this heading">¶</a></h3>
 <p>在线服务启动时需要加载模型文件和词表。这些资源占用内存较大，应该在进程级别共享，而不是每个请求都重新加载。</p>
 <p>本项目使用单例模式管理资源。以召回资源管理器为例：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">RecallResourceManager</span><span class="p">:</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">funrec.models.base</span><span class="w"> </span><span class="kn">import</span> <span class="n">load_model</span>
+
+<span class="k">class</span><span class="w"> </span><span class="nc">RecallResourceManager</span><span class="p">:</span>
     <span class="n">_instance</span> <span class="o">=</span> <span class="kc">None</span>
 
     <span class="k">def</span><span class="w"> </span><span class="fm">__new__</span><span class="p">(</span><span class="bp">cls</span><span class="p">):</span>
@@ -1303,11 +1305,11 @@ HTTP 接口。</p>
     <span class="k">def</span><span class="w"> </span><span class="nf">_load_from_local</span><span class="p">(</span><span class="bp">self</span><span class="p">):</span>
         <span class="n">deploy_dir</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="n">os</span><span class="o">.</span><span class="n">getenv</span><span class="p">(</span><span class="s2">&quot;MODEL_DEPLOY_DIR&quot;</span><span class="p">))</span>
 
-        <span class="c1"># 加载用户模型</span>
+        <span class="c1"># 加载用户模型（PyTorch .pt 文件，load_model 重建模型并返回用户塔子模型）</span>
         <span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="n">deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;model&quot;</span> <span class="o">/</span> <span class="s2">&quot;user_recall&quot;</span> <span class="o">/</span> <span class="s2">&quot;active.json&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
             <span class="n">version_info</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">f</span><span class="p">)</span>
         <span class="n">model_path</span> <span class="o">=</span> <span class="n">deploy_dir</span> <span class="o">/</span> <span class="n">version_info</span><span class="p">[</span><span class="s2">&quot;path&quot;</span><span class="p">]</span>
-        <span class="bp">self</span><span class="o">.</span><span class="n">user_model</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">models</span><span class="o">.</span><span class="n">load_model</span><span class="p">(</span><span class="n">model_path</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">user_model</span> <span class="o">=</span> <span class="n">load_model</span><span class="p">(</span><span class="nb">str</span><span class="p">(</span><span class="n">model_path</span><span class="p">),</span> <span class="n">map_location</span><span class="o">=</span><span class="s2">&quot;cpu&quot;</span><span class="p">)</span>
 
         <span class="c1"># 加载物品向量</span>
         <span class="bp">self</span><span class="o">.</span><span class="n">item_embedding_matrix</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="n">deploy_dir</span> <span class="o">/</span> <span class="s2">&quot;item_embeddings.npy&quot;</span><span class="p">)</span>

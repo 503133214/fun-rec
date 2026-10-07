@@ -105,29 +105,35 @@ ESMM的核心创新在于CVR塔的梯度来源,CVR塔同时接收两种梯度：
 
 .. code:: python
 
-   def build_esmm_model(
-           feature_columns,
-           task_tower_dnn_units=[128, 64],
-           ):
-       # 1) 输入与嵌入：构建输入层和分组嵌入，拼接为共享 DNN 输入
-       input_layer_dict = build_input_layer(feature_columns)
-       group_embedding_feature_dict = build_group_feature_embedding_table_dict(
-           feature_columns, input_layer_dict, prefix="embedding/"
-       )
-       dnn_inputs = concat_group_embedding(group_embedding_feature_dict, 'dnn')
+   class ESMMModel(FunRecModel):
+       def __init__(self, feature_columns, task_tower_dnn_units=[128, 64]):
+           # 1) 输入与嵌入：构建输入层和分组嵌入模块
+           input_layer_dict = build_input_layer(feature_columns)
+           super().__init__(input_names=list(input_layer_dict.keys()), name="esmm")
+           self.embedding = FeatureEmbedding(feature_columns, prefix="embedding/")
 
-       # 2) 双塔共享底座：同一输入分别走 CTR/CVR 塔，输出各自的 logit
-       ctr_logit = DNNs(task_tower_dnn_units + [1], name="ctr_dnn")(dnn_inputs)
-       cvr_logit = DNNs(task_tower_dnn_units + [1], name="cvr_dnn")(dnn_inputs)
+           # 2) 双塔共享底座：CTR/CVR 两个塔，各自输出 logit
+           self.ctr_dnn = DNNs(name="ctr_dnn", units=task_tower_dnn_units + [1])
+           self.cvr_dnn = DNNs(name="cvr_dnn", units=task_tower_dnn_units + [1])
+           self.ctr_output = PredictLayer(name="ctr_output")
+           self.cvr_output = PredictLayer(name="cvr_output")
 
-       # 3) 概率与联乘：CTR 概率，CVR 概率；CTCVR = CTR × CVR
-       ctr_prob = PredictLayer(name="ctr_output")(ctr_logit)
-       cvr_prob = PredictLayer(name="cvr_output")(cvr_logit)
-       ctcvr_prob = tf.keras.layers.Multiply()([ctr_prob, cvr_prob])
+       def forward(self, inputs):
+           # 分组嵌入，拼接为共享 DNN 输入
+           group_embedding_feature_dict = self.embedding(inputs)
+           dnn_inputs = concat_group_embedding(group_embedding_feature_dict, 'dnn')
 
-       # 4) 构建模型：输入为所有原始输入层，输出为 [CTR, CTCVR]
-       model = tf.keras.Model(inputs=list(input_layer_dict.values()), outputs=[ctr_prob, ctcvr_prob])
-       return model
+           # 同一输入分别走 CTR/CVR 塔
+           ctr_logit = self.ctr_dnn(dnn_inputs)
+           cvr_logit = self.cvr_dnn(dnn_inputs)
+
+           # 3) 概率与联乘：CTR 概率，CVR 概率；CTCVR = CTR × CVR
+           ctr_prob = self.ctr_output(ctr_logit)
+           cvr_prob = self.cvr_output(cvr_logit)
+           ctcvr_prob = torch.multiply(ctr_prob, cvr_prob)
+
+           # 4) 输出为 [CTR, CTCVR]
+           return [ctr_prob, ctcvr_prob]
 
 
 

@@ -107,24 +107,25 @@ MIND的核心在于胶囊网络的动态路由实现。在每次迭代中，模�
    # 动态路由的核心循环
    for i in range(self.iteration_times):  # 通常迭代3次
        # 1. 计算路由权重 w_ij
-       routing_logits_with_padding = tf.where(mask, mask_routing_logits, pad)
-       weight = tf.nn.softmax(routing_logits_with_padding)  # [B, k_max, max_len]
+       routing_logits_with_padding = torch.where(mask, mask_routing_logits, pad)
+       weight = F.softmax(routing_logits_with_padding, dim=-1)  # [B, k_max, max_len]
        
        # 2. 通过共享的双线性映射矩阵 S 变换行为嵌入
-       behavior_embdding_mapping = tf.tensordot(
-           behavior_embddings, self.bilinear_mapping_matrix, axes=1
+       behavior_embdding_mapping = torch.matmul(
+           behavior_embddings, self.bilinear_mapping_matrix
        )  # [B, max_len, out_units]
        
        # 3. 加权聚合形成兴趣胶囊
-       Z = tf.matmul(weight, behavior_embdding_mapping)  # [B, k_max, out_units]
+       Z = torch.matmul(weight, behavior_embdding_mapping)  # [B, k_max, out_units]
        interest_capsules = squash(Z)  # 非线性压缩到 [0, 1)
        
-       # 4. 更新路由系数：基于兴趣胶囊与行为的一致性
-       delta_routing_logits = tf.reduce_sum(
-           tf.matmul(interest_capsules, tf.transpose(behavior_embdding_mapping, perm=[0, 2, 1])),
-           axis=0, keepdims=True
-       )
-       self.routing_logits.assign_add(delta_routing_logits)
+       # 4. 更新路由系数：基于兴趣胶囊与行为的一致性（不参与梯度计算）
+       with torch.no_grad():
+           delta_routing_logits = torch.sum(
+               torch.matmul(interest_capsules, behavior_embdding_mapping.transpose(1, 2)),
+               dim=0, keepdim=True
+           )
+           self.routing_logits.add_(delta_routing_logits)
 
 这里的squash函数实现了向量长度的非线性压缩，确保输出向量的模长在\ :math:`[0, 1)`\ 区间内：
 
@@ -136,8 +137,8 @@ MIND的核心在于胶囊网络的动态路由实现。在每次迭代中，模�
 
    def squash(inputs):
        """非线性压缩函数，将向量长度映射到 [0, 1) 区间"""
-       vec_squared_norm = tf.reduce_sum(tf.square(inputs), axis=-1, keepdims=True)
-       scalar_factor = vec_squared_norm / (1 + vec_squared_norm) / tf.sqrt(vec_squared_norm + 1e-9)
+       vec_squared_norm = torch.sum(torch.square(inputs), dim=-1, keepdim=True)
+       scalar_factor = vec_squared_norm / (1 + vec_squared_norm) / torch.sqrt(vec_squared_norm + 1e-9)
        return scalar_factor * inputs
 
 **标签感知的注意力机制**
@@ -165,24 +166,24 @@ Softmax损失函数，通过随机采样一小部分负样本来近似全局的�
 
 .. code:: python
 
-   def call(self, inputs, training=None, **kwargs):
+   def forward(self, inputs, **kwargs):
        keys = inputs[0]  # 多个兴趣胶囊向量 [batch_size, k_max, dim]
-       query = inputs[1]  # 目标商品向量 [batch_size, dim]
+       query = inputs[1]  # 目标商品向量 [batch_size, 1, dim]
        
        # 计算每个兴趣向量与目标商品的相似度
-       weight = tf.reduce_sum(keys * query, axis=-1, keepdims=True)  # [batch_size, k_max, 1]
+       weight = torch.sum(keys * query, dim=-1, keepdim=True)  # [batch_size, k_max, 1]
        
        # 通过幂次运算控制注意力集中度
-       weight = tf.pow(weight, self.pow_p)
+       weight = torch.pow(weight, self.pow_p)
        
        # 如果 pow_p 很大（>= 100），直接选择最相似的兴趣
        if self.pow_p >= 100:
-           idx = tf.argmax(weight, axis=1, output_type=tf.int32)
-           output = tf.gather_nd(keys, idx)
+           idx = torch.argmax(weight, dim=1).squeeze(1)  # [batch_size]
+           output = keys[torch.arange(keys.shape[0]), idx]  # [batch_size, dim]
        else:
            # 否则使用 softmax 进行加权聚合
-           weight = tf.nn.softmax(weight, axis=1)
-           output = tf.reduce_sum(keys * weight, axis=1)  # [batch_size, dim]
+           weight = F.softmax(weight, dim=1)
+           output = torch.sum(keys * weight, dim=1)  # [batch_size, dim]
        
        return output
 

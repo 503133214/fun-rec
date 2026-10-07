@@ -75,25 +75,25 @@ DIN的注意力机制通过将候选广告与历史行为进行多角度交互�
    # query: 候选广告 [batch_size, 1, embedding_dim]
    # keys: 历史行为序列 [batch_size, seq_len, embedding_dim]
 
-   query = tf.squeeze(query, axis=1)  # [B, H]
-   length = tf.shape(keys)[-2]
-   query = tf.expand_dims(query, axis=1)  # [B, 1, H]
+   query = query.squeeze(1)  # [B, H]
+   length = keys.shape[-2]
+   query = query.unsqueeze(1)  # [B, 1, H]
 
    # 构建多角度交互特征：query, keys, query-keys, query*keys
-   att_inputs = tf.concat([
-       tf.tile(query, [1, length, 1]),  # 重复query以匹配序列长度
-       keys,                             # 历史行为
-       query - keys,                     # 差异特征
-       query * keys                      # 元素积特征
-   ], axis=-1)  # [B, L, 4*H]
+   att_inputs = torch.cat([
+       query.expand(-1, length, -1),  # 重复query以匹配序列长度
+       keys,                          # 历史行为
+       query - keys,                  # 差异特征
+       query * keys                   # 元素积特征
+   ], dim=-1)  # [B, L, 4*H]
 
-   # 通过前馈网络计算注意力分数
-   hidden_layer = ffn_layer(att_inputs)  # [B, L, hidden_units]
-   scores = tf.keras.layers.Dense(1)(hidden_layer)  # [B, L, 1]
+   # 通过前馈网络计算注意力分数（self.dense = Dense(1)，在__init__中定义）
+   hidden_layer = self.ffn_layer(att_inputs)  # [B, L, hidden_units]
+   scores = self.dense(hidden_layer)  # [B, L, 1]
 
    # 应用mask并进行加权求和（注意：不使用softmax归一化）
    attention_weights = scores * mask  # [B, L, 1]
-   user_interest = tf.reduce_sum(keys * attention_weights, axis=1)  # [B, H]
+   user_interest = torch.sum(keys * attention_weights, dim=1)  # [B, H]
 
 这种设计的关键在于：通过\ ``[query, keys, query-keys, query*keys]``\ 四种交互方式，模型能够从多个角度衡量历史行为与候选广告的相关性，同时不使用softmax归一化以保留兴趣强度信息。
 
@@ -171,16 +171,16 @@ DIEN的做法很巧妙：既然我们说 :math:`t`
    next_neg_behaviors = neg_behaviors[:, 1:, :]        # [B, T-1, D]
 
    # 拼接兴趣和行为，送入MLP预测
-   pos_input = tf.concat([current_interests, next_pos_behaviors], axis=-1)
-   neg_input = tf.concat([current_interests, next_neg_behaviors], axis=-1)
+   pos_input = torch.cat([current_interests, next_pos_behaviors], dim=-1)
+   neg_input = torch.cat([current_interests, next_neg_behaviors], dim=-1)
 
    # 预测正负样本的概率
-   pos_probs = auxiliary_mlp(pos_input)  # [B, T-1, 1]
-   neg_probs = auxiliary_mlp(neg_input)  # [B, T-1, 1]
+   pos_probs = self.auxiliary_mlp(pos_input)  # [B, T-1, 1]
+   neg_probs = self.auxiliary_mlp(neg_input)  # [B, T-1, 1]
 
    # 二元交叉熵损失
-   aux_loss = -tf.reduce_mean(
-       tf.math.log(pos_probs + 1e-8) + tf.math.log(1 - neg_probs + 1e-8)
+   aux_loss = -torch.mean(
+       torch.log(pos_probs + 1e-8) + torch.log(1 - neg_probs + 1e-8)
    )
 
 这种设计确保GRU的隐状态不仅能记录历史信息，还能有效预测未来行为，从而学到更有意义的兴趣表示。
@@ -226,34 +226,34 @@ AUGRU的核心在于用注意力分数调整GRU的更新门：
 
    # 1. 计算双线性注意力分数
    # h_t * W * e_a
-   h_W = tf.tensordot(interest_states, bilinear_weight, axes=[[2], [0]])
-   target_expanded = tf.expand_dims(target_item_embedding, axis=1)
-   attention_scores = tf.reduce_sum(h_W * target_expanded, axis=2)  # [B, T]
-   attention_scores = tf.nn.softmax(attention_scores, axis=1)  # [B, T]
+   # bilinear_weight: [hidden_units, embedding_dim]，由self.add_weight创建
+   h_W = torch.matmul(interest_states, self.bilinear_weight)  # [B, T, D]
+   target_expanded = target_item_embedding.unsqueeze(1)  # [B, 1, D]
+   attention_scores = torch.sum(h_W * target_expanded, dim=2)  # [B, T]
+   attention_scores = torch.softmax(attention_scores, dim=1)  # [B, T]
 
    # 2. 逐步处理序列
-   hidden_state = tf.zeros([batch_size, hidden_units])
+   hidden_state = torch.zeros(batch_size, hidden_units)
    for t in range(seq_len):
        current_input = interest_states[:, t, :]     # [B, H]
        current_attention = attention_scores[:, t]   # [B]
-       
+
        # 标准GRU计算
-       update_gate = tf.nn.sigmoid(
-           dense_input_update(current_input) + dense_hidden_update(hidden_state)
+       update_gate = torch.sigmoid(
+           self.dense_input_update(current_input) + self.dense_hidden_update(hidden_state)
        )  # [B, H]
-       
-       reset_gate = tf.nn.sigmoid(
-           dense_input_reset(current_input) + dense_hidden_reset(hidden_state)
+
+       reset_gate = torch.sigmoid(
+           self.dense_input_reset(current_input) + self.dense_hidden_reset(hidden_state)
        )  # [B, H]
-       
-       candidate_state = tf.nn.tanh(
-           dense_input_candidate(current_input) + 
-           dense_hidden_candidate(reset_gate * hidden_state)
+
+       candidate_state = torch.tanh(
+           self.dense_input_candidate(current_input) +
+           self.dense_hidden_candidate(reset_gate * hidden_state)
        )  # [B, H]
-       
+
        # 关键：用注意力分数缩放更新门
-       attention_expanded = tf.expand_dims(current_attention, axis=1)
-       attention_expanded = tf.tile(attention_expanded, [1, hidden_units])
+       attention_expanded = current_attention.unsqueeze(1).expand(-1, hidden_units)
        attention_update_gate = attention_expanded * update_gate  # [B, H]
        
        # 更新隐藏状态
@@ -325,6 +325,24 @@ DSIN的三个核心组件实现了分层的会话建模：
 
 .. code:: python
 
+   # __init__中定义各层：每个会话一个多头自注意力层、一个双向LSTM和一个打分层
+   # d_model = att_embedding_size * att_head_num
+   self.session_attention_layers = nn.ModuleList([
+       _MultiHeadAttention(
+           num_heads=att_head_num,
+           key_dim=att_embedding_size,
+           dropout=dropout_rate
+       )
+       for _ in range(sess_max_count)
+   ])
+   self.session_interaction_lstm = BidirectionalLSTM(
+       d_model // 2,  # 每个方向d_model//2个单元，拼接后为d_model
+       dropout=dropout_rate,
+       recurrent_dropout=dropout_rate
+   )
+   self.attention_score_interactions = Dense(1, activation='tanh')
+
+   # ---------------- forward中 ----------------
    # 1. 会话兴趣提取：使用多头自注意力聚合会话内信息
    # session_embeddings: [batch_size, sess_max_count, sess_max_len, embedding_dim]
 
@@ -332,47 +350,41 @@ DSIN的三个核心组件实现了分层的会话建模：
    for sess_idx in range(sess_max_count):
        # 获取单个会话的embedding
        session_emb = session_embeddings[:, sess_idx, :, :]  # [B, L, D]
-       
-       # 多头自注意力捕获会话内物品之间的关系
-       attention_output = tf.keras.layers.MultiHeadAttention(
-           num_heads=att_head_num,
-           key_dim=att_embedding_size,
-           dropout=dropout_rate
-       )(session_emb, session_emb)  # [B, L, d_model]
-       
+
+       # 多头自注意力捕获会话内物品之间的关系（输出维度与输入相同）
+       attention_output = self.session_attention_layers[sess_idx](
+           session_emb, session_emb
+       )  # [B, L, D]
+
        # 平均池化得到会话级表示
-       session_interest = tf.reduce_mean(attention_output, axis=1)  # [B, d_model]
+       session_interest = torch.mean(attention_output, dim=1)  # [B, D]
        session_interests.append(session_interest)
 
-   session_interests = tf.stack(session_interests, axis=1)  # [B, K, d_model]
+   session_interests = torch.stack(session_interests, dim=1)  # [B, K, D]
 
    # 2. 会话兴趣交互：使用双向LSTM建模会话间的时序关系
-   session_interactions = tf.keras.layers.Bidirectional(
-       tf.keras.layers.LSTM(
-           d_model // 2,
-           return_sequences=True,
-           dropout=dropout_rate
-       )
-   )(session_interests)  # [B, K, d_model*2]
+   session_interactions = self.session_interaction_lstm(
+       session_interests
+   )  # [B, K, d_model]
 
    # 3. 会话兴趣激活：基于目标物品激活相关会话
    # 扩展目标物品embedding以匹配会话维度
-   target_expanded = tf.expand_dims(target_item_embedding, axis=1)  # [B, 1, D]
-   target_repeated = tf.tile(target_expanded, [1, sess_max_count, 1])  # [B, K, D]
+   target_expanded = target_item_embedding.unsqueeze(1)  # [B, 1, D]
+   target_repeated = target_expanded.repeat(1, sess_max_count, 1)  # [B, K, D]
 
    # 拼接会话特征和目标物品
-   combined_features = tf.concat(
-       [session_interactions, target_repeated], axis=-1
-   )  # [B, K, d_model*2 + D]
+   combined_features = torch.cat(
+       [session_interactions, target_repeated], dim=-1
+   )  # [B, K, d_model + D]
 
    # 计算注意力权重
-   attention_scores = tf.keras.layers.Dense(1, activation='tanh')(combined_features)
-   attention_weights = tf.nn.softmax(attention_scores, axis=1)  # [B, K, 1]
+   attention_scores = self.attention_score_interactions(combined_features)  # [B, K, 1]
+   attention_weights = torch.softmax(attention_scores, dim=1)  # [B, K, 1]
 
    # 加权聚合会话特征
-   activated_features = tf.reduce_sum(
-       session_interactions * attention_weights, axis=1
-   )  # [B, d_model*2]
+   activated_features = torch.sum(
+       session_interactions * attention_weights, dim=1
+   )  # [B, d_model]
 
 这种设计体现了“分层建模”的思想：先用自注意力在会话内聚合，再用BiLSTM在会话间传递，最后用注意力激活相关会话，从而实现对用户行为的细粒度刻画。
 

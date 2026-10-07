@@ -50,31 +50,33 @@ Wide部分的关键在于处理交叉特征。对于每一对需要交叉的特�
 
 .. code:: python
 
-   # 遍历所有需要交叉的特征对
+   # __init__：为每一对需要交叉的特征创建独立的权重表
    for i in range(len(cross_feature_columns)):
        for j in range(i + 1, len(cross_feature_columns)):
            fc_i = cross_feature_columns[i]
            fc_j = cross_feature_columns[j]
-           
-           # 获取两个特征的输入
-           feat_i = input_layer_dict[fc_i.name]  # [B, 1]
-           feat_j = input_layer_dict[fc_j.name]  # [B, 1]
-           
-           # 为每个特征对创建独立的权重表
+           key = f"cross_{fc_i.name}_{fc_j.name}"
+
            cross_vocab_size = fc_i.vocab_size * fc_j.vocab_size
-           cross_embedding = Embedding(
+           self.cross_embeddings[key] = Embedding(
                input_dim=cross_vocab_size,
                output_dim=1,  # 标量权重，直接记住这对特征的影响
-               name=f"cross_{fc_i.name}_{fc_j.name}"
+               name=key
            )
-           
-           # 将特征对组合成单一索引并查找权重
-           combined_index = feat_i * fc_j.vocab_size + feat_j
-           cross_weight = cross_embedding(combined_index)  # 查表得到这对特征的权重
-           cross_weights.append(cross_weight)
+           self.pairs.append((key, fc_i, fc_j))
+
+   # forward：将特征对组合成单一索引并查找权重
+   cross_weights = []
+   for key, fc_i, fc_j in self.pairs:
+       feat_i = inputs[fc_i.name].long()  # [B, 1]
+       feat_j = inputs[fc_j.name].long()  # [B, 1]
+
+       combined_index = feat_i * fc_j.vocab_size + feat_j
+       cross_weight = self.cross_embeddings[key](combined_index).squeeze(-1)  # [B, 1]
+       cross_weights.append(cross_weight)
 
    # 所有交叉特征权重相加
-   cross_logits = tf.add_n(cross_weights)
+   cross_logits = add_tensor_func(cross_weights)  # [B, 1]
 
 这段代码的设计体现了Wide部分的本质：为每个特征组合分配一个独立的权重，通过查表操作直接“记住”历史数据中的共现模式。
 
@@ -101,7 +103,21 @@ Deep部分的实现分为两个关键步骤：首先将类别特征映射为稠�
 
 .. code:: python
 
+   # __init__：每个特征组一个多层神经网络 + 输出层
+   self.deep_dnns = nn.ModuleDict({
+       g: DNNs(
+           units=dnn_units,  # 例如 [64, 32]
+           activation="relu",  # ReLU激活函数
+           dropout_rate=dnn_dropout_rate
+       )
+       for g in self.group_names
+   })
+   # 输出层：将深度特征映射为预测分数
+   self.deep_logit_layers = nn.ModuleDict({g: Dense(1, activation=None) for g in self.group_names})
+
+   # forward
    # 1. 特征嵌入：将稀疏的类别特征转换为稠密向量
+   group_embedding_feature_dict = self.embedding(inputs)
    group_feature_dict = {}
    for group_name, _ in group_embedding_feature_dict.items():
        group_feature_dict[group_name] = concat_group_embedding(
@@ -111,15 +127,8 @@ Deep部分的实现分为两个关键步骤：首先将类别特征映射为稠�
    # 2. 深度神经网络：逐层学习特征的非线性组合
    deep_logits = []
    for group_name, group_feature in group_feature_dict.items():
-       # 构建多层神经网络
-       deep_out = DNNs(
-           units=dnn_units,  # 例如 [64, 32]
-           activation="relu",  # ReLU激活函数
-           dropout_rate=dnn_dropout_rate
-       )(group_feature)
-       
-       # 输出层：将深度特征映射为预测分数
-       deep_logit = tf.keras.layers.Dense(1, activation=None)(deep_out)
+       deep_out = self.deep_dnns[group_name](group_feature)
+       deep_logit = self.deep_logit_layers[group_name](deep_out)  # B x 1
        deep_logits.append(deep_logit)
 
 这种设计使得模型能够自动学习特征的语义表示，例如将“物品A”相关的特征映射到向量空间的相近位置，从而实现对未见过的特征组合的泛化预测。
@@ -154,24 +163,28 @@ Deep模型通过联合训练，将两部分的输出结合起来进行最终的�
 
 .. code:: python
 
+   # __init__：Wide部分的线性模块、交叉模块，以及最终输出层
+   self.linear_logits = get_linear_logits(feature_columns)
+   self.cross_logits = get_cross_logits(feature_columns)
+   self.wide_deep_output = Dense(1, activation="sigmoid", name="wide_deep_output")
+
+   # forward
    # Wide部分：线性特征 + 交叉特征
-   linear_logit = get_linear_logits(input_layer_dict, feature_columns)
-   cross_logit = get_cross_logits(input_layer_dict, feature_columns)
+   linear_logit = self.linear_logits(inputs)  # B x 1
+   cross_logit = self.cross_logits(inputs)  # B x 1
 
    # Deep部分：多个特征组的深度网络输出
    deep_logits = []
    for group_name, group_feature in group_feature_dict.items():
-       deep_out = DNNs(units=dnn_units, activation="relu", dropout_rate=dnn_dropout_rate)(
-           group_feature
-       )
-       deep_logit = tf.keras.layers.Dense(1, activation=None)(deep_out)
+       deep_out = self.deep_dnns[group_name](group_feature)
+       deep_logit = self.deep_logit_layers[group_name](deep_out)  # B x 1
        deep_logits.append(deep_logit)
 
    # 联合训练：将Wide和Deep的输出相加
    wide_deep_logits = add_tensor_func(deep_logits + [linear_logit, cross_logit])
 
    # 最终预测：通过sigmoid函数输出点击概率
-   output = tf.keras.layers.Dense(1, activation="sigmoid")(wide_deep_logits)
+   output = self.wide_deep_output(wide_deep_logits)  # B x 1
 
 Wide &
 Deep模型的意义不只是提供了一个新的网络结构，更重要的是给出了一个思路：怎么把记忆能力和泛化能力结合起来。该模型不仅成为了许多推荐业务的基线模型，更为后续精排模型的发展提供了重要的参考。

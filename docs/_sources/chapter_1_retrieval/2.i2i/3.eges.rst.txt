@@ -76,28 +76,28 @@ EGES的核心在于商品特定注意力层（ItemSpecificAttentionLayer），�
 
 .. code:: python
 
-   def call(self, inputs, item_indices):
+   def forward(self, inputs, item_indices):
        """
        参数:
            inputs: 特征嵌入 [batch_size, n+1, emb_dim]
            item_indices: 商品索引 [batch_size]
        """
        # 获取每个商品对应的权重参数 a_v^j
-       batch_attention_weights = tf.gather(self.attention_weights, item_indices)
+       batch_attention_weights = self.attention_weights[item_indices.long()]
        
        # 计算 e^(a_v^j)
-       exp_attention = tf.exp(batch_attention_weights)  # [batch_size, n+1]
+       exp_attention = torch.exp(batch_attention_weights)  # [batch_size, n+1]
        
        # 归一化权重: e^(a_v^j) / sum(e^(a_v^j))
-       attention_sum = tf.reduce_sum(exp_attention, axis=1, keepdims=True)
+       attention_sum = torch.sum(exp_attention, dim=1, keepdim=True)
        normalized_attention = exp_attention / attention_sum
        
        # 应用权重到特征嵌入
-       normalized_attention = tf.expand_dims(normalized_attention, axis=-1)
+       normalized_attention = normalized_attention.unsqueeze(-1)
        weighted_embedding = inputs * normalized_attention  # [batch_size, n+1, emb_dim]
        
        # 求和得到最终的商品表示 H_v
-       output = tf.reduce_sum(weighted_embedding, axis=1)  # [batch_size, emb_dim]
+       output = torch.sum(weighted_embedding, dim=1)  # [batch_size, emb_dim]
        
        return output, normalized_attention
 

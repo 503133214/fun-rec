@@ -64,7 +64,15 @@ DSSM的实现核心在于构建独立的用户塔和物品塔，每个塔都是�
 
 .. code:: python
 
-   # 拼接用户侧和物品侧特征
+   # __init__ 中：构建用户塔和物品塔（深度神经网络）
+   self.user_dnn = DNNs(
+       units=dnn_units, activation="tanh", dropout_rate=dropout_rate, use_bn=True
+   )
+   self.item_dnn = DNNs(
+       units=dnn_units, activation="tanh", dropout_rate=dropout_rate, use_bn=True
+   )
+
+   # forward 中：拼接用户侧和物品侧特征
    user_feature = concat_group_embedding(
        group_embedding_feature_dict, "user", axis=1, flatten=True
    )  # B x (N*D)
@@ -72,13 +80,9 @@ DSSM的实现核心在于构建独立的用户塔和物品塔，每个塔都是�
        group_embedding_feature_dict, "item", axis=1, flatten=True
    )  # B x (N*D)
 
-   # 构建用户塔和物品塔（深度神经网络）
-   user_tower = DNNs(
-       units=dnn_units, activation="tanh", dropout_rate=dropout_rate, use_bn=True
-   )(user_feature)
-   item_tower = DNNs(
-       units=dnn_units, activation="tanh", dropout_rate=dropout_rate, use_bn=True
-   )(item_feature)
+   # 分别通过用户塔和物品塔
+   user_tower = self.user_dnn(user_feature)  # B x dnn_units[-1]
+   item_tower = self.item_dnn(item_feature)  # B x dnn_units[-1]
 
 关键的向量归一化和相似度计算：
 
@@ -88,16 +92,19 @@ DSSM的实现核心在于构建独立的用户塔和物品塔，每个塔都是�
 
 .. code:: python
 
+   def _l2_normalize(x, axis=1, epsilon=1e-12):
+       # x / sqrt(max(sum(x^2), epsilon))
+       square_sum = torch.sum(x * x, dim=axis, keepdim=True)
+       return x * torch.rsqrt(torch.clamp(square_sum, min=epsilon))
+
    # L2归一化：确保训练与检索的一致性
-   user_embedding = tf.keras.layers.Lambda(lambda x: tf.nn.l2_normalize(x, axis=1))(
-       user_tower
-   )
-   item_embedding = tf.keras.layers.Lambda(lambda x: tf.nn.l2_normalize(x, axis=1))(
-       item_tower
-   )
+   user_embedding = _l2_normalize(user_tower, axis=1)  # B x dnn_units[-1]
+   item_embedding = _l2_normalize(item_tower, axis=1)  # B x dnn_units[-1]
 
    # 计算余弦相似度（归一化向量的点积）
-   cosine_similarity = tf.keras.layers.Dot(axes=1)([user_embedding, item_embedding])
+   cosine_similarity = torch.sum(
+       user_embedding * item_embedding, dim=1, keepdim=True
+   )  # B x 1
 
 这种设计使得用户和物品的表示完全独立，支持离线预计算物品向量并存储在ANN索引中，实现毫秒级的召回响应。
 

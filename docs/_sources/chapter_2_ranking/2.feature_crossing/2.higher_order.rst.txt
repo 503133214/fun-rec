@@ -93,10 +93,10 @@ DCN的核心在于Cross Network的交叉层计算。每一层都保持与原始�
    x_l = x_0  # 初始化为原始输入
    for i in range(num_cross_layers):
        # 计算 x_l^T * w_l：得到一个标量权重
-       xlw = tf.matmul(x_l, w_l)  # [B, 1]
+       xlw = torch.matmul(x_l, w_l)  # [B, 1]
        
        # 计算 x_0 * (x_l^T * w_l)：交叉项
-       cross_term = tf.multiply(x_0, xlw)  # [B, D]
+       cross_term = x_0 * xlw  # [B, D]
        
        # 残差连接：x_{l+1} = cross_term + b_l + x_l
        x_l = cross_term + b_l + x_l  # [B, D]
@@ -214,24 +214,24 @@ CIN的核心在于向量级别的特征交互计算。每一层都通过哈达�
        x_0 = cin_layers[0]  # [B, m, D]
        
        # 扩展维度以便进行广播计算
-       x_k_minus_1_expand = tf.expand_dims(x_k_minus_1, axis=2)  # [B, H_{k-1}, 1, D]
-       x_0_expand = tf.expand_dims(x_0, axis=1)  # [B, 1, m, D]
+       x_k_minus_1_expand = x_k_minus_1.unsqueeze(2)  # [B, H_{k-1}, 1, D]
+       x_0_expand = x_0.unsqueeze(1)  # [B, 1, m, D]
        
        # 向量级别的哈达玛积交互
-       z_k = tf.multiply(x_k_minus_1_expand, x_0_expand)  # [B, H_{k-1}, m, D]
+       z_k = x_k_minus_1_expand * x_0_expand  # [B, H_{k-1}, m, D]
        
        # 压缩：通过线性变换将 H_{k-1}*m 个交互向量压缩为 H_k 个
-       z_k_reshape = tf.reshape(z_k, [batch_size, -1, embed_dim])  # [B, H_{k-1}*m, D]
-       x_k = dense_layer(tf.transpose(z_k_reshape, [0, 2, 1]))  # [B, D, H_k]
-       x_k = tf.transpose(x_k, [0, 2, 1])  # [B, H_k, D]
+       z_k_reshape = z_k.reshape(batch_size, -1, embed_dim)  # [B, H_{k-1}*m, D]
+       x_k = dense_layer(z_k_reshape.transpose(1, 2))  # [B, D, H_k]
+       x_k = x_k.transpose(1, 2)  # [B, H_k, D]
        
        cin_layers.append(x_k)
        
        # 求和池化：将向量维度聚合为标量
-       pooled_outputs.append(tf.reduce_sum(x_k, axis=-1))  # [B, H_k]
+       pooled_outputs.append(torch.sum(x_k, dim=-1))  # [B, H_k]
 
    # 拼接所有层的输出
-   cin_output = tf.concat(pooled_outputs, axis=1)  # [B, sum(H_k)]
+   cin_output = torch.cat(pooled_outputs, dim=1)  # [B, sum(H_k)]
 
 CIN通过保持向量结构的交互方式，既实现了显式的高阶特征组合，又避免了参数量的过快增长。
 
@@ -355,26 +355,26 @@ AutoInt的核心在于多头自注意力机制，它能够自适应地学习特�
    head_outputs = []
    for i in range(num_heads):
        # 计算Query、Key、Value矩阵
-       query = tf.einsum('bfe,ea->bfa', inputs, query_weights[i])  # [B, N, d']
-       key = tf.einsum('bfe,ea->bfa', inputs, key_weights[i])      # [B, N, d']
-       value = tf.einsum('bfe,ea->bfa', inputs, value_weights[i])  # [B, N, d']
+       query = torch.einsum('bfe,ea->bfa', inputs, query_weights[i])  # [B, N, d']
+       key = torch.einsum('bfe,ea->bfa', inputs, key_weights[i])      # [B, N, d']
+       value = torch.einsum('bfe,ea->bfa', inputs, value_weights[i])  # [B, N, d']
        
        # 计算注意力得分：Query和Key的点积
-       attention_score = tf.matmul(query, key, transpose_b=True)  # [B, N, N]
+       attention_score = torch.matmul(query, key.transpose(-1, -2))  # [B, N, N]
        
        # Softmax归一化得到注意力权重
-       attention_weights = tf.nn.softmax(attention_score, axis=-1)  # [B, N, N]
+       attention_weights = torch.softmax(attention_score, dim=-1)  # [B, N, N]
        
        # 加权求和：用注意力权重对Value进行聚合
-       head_output = tf.matmul(attention_weights, value)  # [B, N, d']
+       head_output = torch.matmul(attention_weights, value)  # [B, N, d']
        head_outputs.append(head_output)
 
    # 拼接多个注意力头的输出
-   multi_head_output = tf.concat(head_outputs, axis=-1)  # [B, N, d'*H]
+   multi_head_output = torch.cat(head_outputs, dim=-1)  # [B, N, d'*H]
 
    # 残差连接：保留原始信息
-   residual_input = tf.tensordot(inputs, residual_weights, axes=[[2], [0]])
-   output = tf.keras.layers.ReLU()(multi_head_output + residual_input)
+   residual_input = torch.tensordot(inputs, residual_weights, dims=([2], [0]))  # [B, N, d'*H]
+   output = F.relu(multi_head_output + residual_input)  # [B, N, d'*H]
 
 通过堆叠多层这样的自注意力层，AutoInt能够显式地构建任意高阶的特征交互，且交互模式完全由数据驱动学习得到。
 

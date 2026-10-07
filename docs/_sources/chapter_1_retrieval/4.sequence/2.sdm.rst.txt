@@ -82,27 +82,35 @@ LSTM的引入主要是为了处理在线购物中的一个常见问题：用户�
 
 .. code:: python
 
-   # 1. 序列信息学习层：使用LSTM处理序列依赖
-   lstm_layer = tf.keras.layers.LSTM(
-       emb_dim, 
+   # ---- __init__ 中定义各层 ----
+   # 1. 序列信息学习层：使用LSTM处理序列依赖（KerasLSTM 内部封装 torch.nn.LSTM）
+   self.lstm_layer = KerasLSTM(
+       emb_dim,
        return_sequences=True,  # 返回所有时间步的输出
        recurrent_initializer='glorot_uniform'
    )
-   sequence_output = lstm_layer(short_history_item_emb)  # [batch_size, seq_len, dim]
-
    # 2. 多兴趣提取层：多头自注意力捕捉序列内的复杂关系
-   norm_sequence_output = tf.keras.layers.LayerNormalization()(sequence_output)
-   sequence_output = tf.keras.layers.MultiHeadAttention(
+   self.short_norm = nn.LayerNorm(emb_dim, eps=1e-3)
+   self.short_term_attention = _MultiHeadAttention(
        num_heads=num_heads,
        key_dim=emb_dim // num_heads,
        dropout=0.1
-   )(norm_sequence_output, sequence_output)  # [batch_size, seq_len, dim]
-
-   short_term_output = tf.keras.layers.LayerNormalization()(sequence_output)
-
+   )
+   self.short_term_norm = nn.LayerNorm(emb_dim, eps=1e-3)
    # 3. 用户个性化注意力层：使用用户画像作为查询向量
-   user_attention = UserAttention(name='user_attention_short')
-   short_term_interest = user_attention(
+   self.user_attention_short = UserAttention(name='user_attention_short')
+
+   # ---- forward 中依次调用 ----
+   sequence_output = self.lstm_layer(short_history_item_emb)  # [batch_size, seq_len, dim]
+
+   norm_sequence_output = self.short_norm(sequence_output)
+   sequence_output = self.short_term_attention(
+       norm_sequence_output, sequence_output
+   )  # [batch_size, seq_len, dim]
+
+   short_term_output = self.short_term_norm(sequence_output)
+
+   short_term_interest = self.user_attention_short(
        user_embedding,  # [batch_size, 1, dim] 用户画像作为查询
        short_term_output  # [batch_size, seq_len, dim] 序列作为键和值
    )  # [batch_size, 1, dim]
@@ -115,23 +123,23 @@ LSTM的引入主要是为了处理在线购物中的一个常见问题：用户�
 
 .. code:: python
 
-   class UserAttention(tf.keras.layers.Layer):
+   class UserAttention(Layer):
        """用户注意力层，使用用户基础表示作为查询向量"""
        
-       def call(self, query_vector, key_vectors):
+       def forward(self, query_vector, key_vectors):
            # 计算注意力分数：query · key^T
-           attention_scores = tf.matmul(
+           attention_scores = torch.matmul(
                query_vector,  # [batch_size, 1, dim]
-               tf.transpose(key_vectors, [0, 2, 1])  # [batch_size, dim, seq_len]
+               key_vectors.transpose(1, 2)  # [batch_size, dim, seq_len]
            )  # [batch_size, 1, seq_len]
            
-           attention_scores = tf.squeeze(attention_scores, axis=1)
-           attention_weights = tf.nn.softmax(attention_scores, axis=-1)
+           attention_scores = attention_scores.squeeze(1)  # [batch_size, seq_len]
+           attention_weights = torch.softmax(attention_scores, dim=-1)
            
            # 加权求和得到上下文向量
-           context_vector = tf.matmul(
-               tf.expand_dims(attention_weights, axis=1),
-               key_vectors
+           context_vector = torch.matmul(
+               attention_weights.unsqueeze(1),  # [batch_size, 1, seq_len]
+               key_vectors  # [batch_size, seq_len, dim]
            )  # [batch_size, 1, dim]
            
            return context_vector
@@ -189,30 +197,23 @@ LSTM的引入主要是为了处理在线购物中的一个常见问题：用户�
    long_term_interests = []
    for name, long_history_feature in long_history_features.items():
        # 为每个特征维度生成 mask
-       long_history_mask = tf.keras.layers.Lambda(
-           lambda x: tf.expand_dims(
-               tf.cast(tf.not_equal(x, 0), dtype=tf.float32), axis=-1
-           )
-       )(input_layer_dict[name])  # [batch_size, max_len_long, 1]
+       long_history_mask = (inputs[name] != 0).float().unsqueeze(-1)  # [batch_size, max_len_long, 1]
        
        # 应用 mask 到特征嵌入
-       long_history_item_emb = tf.keras.layers.Lambda(lambda x: x[0] * x[1])(
-           [long_history_feature, long_history_mask]
-       )  # [batch_size, max_len_long, dim]
+       long_history_item_emb = long_history_feature * long_history_mask  # [batch_size, max_len_long, dim]
        
-       # 对每个特征维度应用用户注意力
-       user_attention = UserAttention(name=f'user_attention_long_{name}')
+       # 对每个特征维度应用各自的用户注意力层（在 __init__ 中按特征名用 nn.ModuleDict 定义）
        long_term_interests.append(
-           user_attention(user_embedding, long_history_item_emb)
+           self.user_attention_long[name](user_embedding, long_history_item_emb)
        )  # [batch_size, 1, dim]
 
    # 拼接所有特征维度的表示
-   long_term_interests_concat = tf.keras.layers.Concatenate(axis=-1)(
-       long_term_interests
+   long_term_interests_concat = torch.cat(
+       long_term_interests, dim=-1
    )  # [batch_size, 1, dim * len(long_history_features)]
 
-   # 通过全连接层融合
-   long_term_interest = tf.keras.layers.Dense(emb_dim, activation='tanh')(
+   # 通过全连接层融合（self.long_term_dense = Dense(emb_dim, activation='tanh')）
+   long_term_interest = self.long_term_dense(
        long_term_interests_concat
    )  # [batch_size, 1, dim]
 
@@ -244,10 +245,11 @@ SDM设计了门控融合机制，类似LSTM中的门控思想
 
 .. code:: python
 
-   class GatedFusion(tf.keras.layers.Layer):
+   class GatedFusion(Layer):
        """门控融合层，用于融合长期和短期兴趣"""
        
        def build(self, input_shape):
+           # 首次 forward 时根据输入维度惰性创建参数
            dim = input_shape[0][-1]
            # 为用户画像、短期兴趣、长期兴趣分别学习权重矩阵
            self.W1 = self.add_weight(
@@ -262,16 +264,15 @@ SDM设计了门控融合机制，类似LSTM中的门控思想
            self.b = self.add_weight(
                shape=(dim,), initializer='zeros', trainable=True, name='bias'
            )
-           super(GatedFusion, self).build(input_shape)
        
-       def call(self, inputs):
+       def forward(self, inputs):
            user_embedding, short_term, long_term = inputs
            
            # 计算门控向量：G = sigmoid(W1·e_u + W2·s_t + W3·p_u + b)
-           gate = tf.sigmoid(
-               tf.matmul(user_embedding, self.W1) + 
-               tf.matmul(short_term, self.W2) + 
-               tf.matmul(long_term, self.W3) + 
+           gate = torch.sigmoid(
+               torch.matmul(user_embedding, self.W1) + 
+               torch.matmul(short_term, self.W2) + 
+               torch.matmul(long_term, self.W3) + 
                self.b
            )  # [batch_size, 1, dim]
            
@@ -298,9 +299,8 @@ SDM设计了门控融合机制，类似LSTM中的门控思想
        long_history_features, user_embedding
    )  # [batch_size, 1, dim]
 
-   # 门控融合
-   gated_fusion = GatedFusion(name='gated_fusion')
-   final_interest = gated_fusion(
+   # 门控融合（self.gated_fusion = GatedFusion(name='gated_fusion') 在 __init__ 中定义）
+   final_interest = self.gated_fusion(
        [user_embedding, short_term_interest, long_term_interest]
    )  # [batch_size, 1, dim]
 

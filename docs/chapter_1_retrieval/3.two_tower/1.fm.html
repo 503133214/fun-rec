@@ -424,35 +424,35 @@ Show Source
 <h2><span class="section-number">2.3.1.3. </span>代码实践<a class="headerlink" href="#id4" title="Permalink to this heading">¶</a></h2>
 <p>FM召回的双塔实现关键在于如何将数学推导转化为实际的向量表示。用户塔构建了包含常数项和特征聚合的向量：</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 用户塔：V_user = [1; ∑(v_u * x_u)]</span>
-<span class="n">user_concat</span> <span class="o">=</span> <span class="n">Concatenate</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)(</span><span class="n">user_embeddings</span><span class="p">)</span>  <span class="c1"># [batch_size, num_user_features, embedding_dim]</span>
-<span class="n">user_embedding_sum</span> <span class="o">=</span> <span class="n">SumPooling</span><span class="p">()(</span><span class="n">user_concat</span><span class="p">)</span>  <span class="c1"># [batch_size, embedding_dim]</span>
+<span class="n">user_concat</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">user_embeddings</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [batch_size, num_user_features, embedding_dim]</span>
+<span class="n">user_embedding_sum</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_embedding_sum</span><span class="p">(</span><span class="n">user_concat</span><span class="p">)</span>  <span class="c1"># SumPooling: [batch_size, embedding_dim]</span>
 
 <span class="c1"># 构建用户向量：[1; ∑(v_u * x_u)]</span>
-<span class="n">ones_vector</span> <span class="o">=</span> <span class="n">OnesLayer</span><span class="p">()(</span><span class="n">user_embedding_sum</span><span class="p">)</span>  <span class="c1"># [batch_size, 1]</span>
-<span class="n">user_vector</span> <span class="o">=</span> <span class="n">Concatenate</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)([</span><span class="n">ones_vector</span><span class="p">,</span> <span class="n">user_embedding_sum</span><span class="p">])</span>
+<span class="n">ones_vector</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">ones_vector</span><span class="p">(</span><span class="n">user_embedding_sum</span><span class="p">)</span>  <span class="c1"># OnesLayer: [batch_size, 1]</span>
+<span class="n">user_vector</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">([</span><span class="n">ones_vector</span><span class="p">,</span> <span class="n">user_embedding_sum</span><span class="p">],</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [batch_size, 1 + embedding_dim]</span>
 </pre></div>
 </div>
 <p>物品塔则更为复杂，需要计算一阶线性项和FM交互项：</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 物品塔：V_item = [∑w_t*x_t + FM_interaction; ∑(v_t * x_t)]</span>
-<span class="n">item_concat</span> <span class="o">=</span> <span class="n">Concatenate</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)(</span><span class="n">item_embeddings</span><span class="p">)</span>  <span class="c1"># [batch_size, num_item_features, embedding_dim]</span>
-<span class="n">item_embedding_sum</span> <span class="o">=</span> <span class="n">SumPooling</span><span class="p">()(</span><span class="n">item_concat</span><span class="p">)</span>  <span class="c1"># [batch_size, embedding_dim]</span>
+<span class="n">item_concat</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span><span class="n">item_embeddings</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [batch_size, num_item_features, embedding_dim]</span>
+<span class="n">item_embedding_sum</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_embedding_sum</span><span class="p">(</span><span class="n">item_concat</span><span class="p">)</span>  <span class="c1"># SumPooling: [batch_size, embedding_dim]</span>
 
-<span class="c1"># 计算一阶线性项：∑(w_t * x_t)</span>
-<span class="n">item_linear_weights</span> <span class="o">=</span> <span class="n">Dense</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">use_bias</span><span class="o">=</span><span class="kc">False</span><span class="p">)(</span><span class="n">item_embedding_sum</span><span class="p">)</span>
+<span class="c1"># 计算一阶线性项：∑(w_t * x_t)，item_linear_weights 为 Dense(1, use_bias=False)</span>
+<span class="n">item_linear_weights</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_linear_weights</span><span class="p">(</span><span class="n">item_embedding_sum</span><span class="p">)</span>  <span class="c1"># [batch_size, 1]</span>
 
 <span class="c1"># 计算FM二阶交互项：0.5 * ((∑v_t*x_t)² - ∑(v_t²*x_t²))</span>
-<span class="n">sum_squared</span> <span class="o">=</span> <span class="n">SquareLayer</span><span class="p">()(</span><span class="n">item_embedding_sum</span><span class="p">)</span>
-<span class="n">item_squared</span> <span class="o">=</span> <span class="n">SquareLayer</span><span class="p">()(</span><span class="n">item_concat</span><span class="p">)</span>
-<span class="n">squared_sum</span> <span class="o">=</span> <span class="n">SumPooling</span><span class="p">()(</span><span class="n">item_squared</span><span class="p">)</span>
-<span class="n">fm_interaction_vector</span> <span class="o">=</span> <span class="n">Subtract</span><span class="p">()([</span><span class="n">sum_squared</span><span class="p">,</span> <span class="n">squared_sum</span><span class="p">])</span>
-<span class="n">fm_interaction_scalar</span> <span class="o">=</span> <span class="n">SumScalarLayer</span><span class="p">()(</span><span class="n">ScaleLayer</span><span class="p">(</span><span class="mf">0.5</span><span class="p">)(</span><span class="n">fm_interaction_vector</span><span class="p">))</span>
+<span class="n">sum_squared</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_sum_squared</span><span class="p">(</span><span class="n">item_embedding_sum</span><span class="p">)</span>  <span class="c1"># SquareLayer: [batch_size, embedding_dim]</span>
+<span class="n">item_squared</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_squared</span><span class="p">(</span><span class="n">item_concat</span><span class="p">)</span>  <span class="c1"># SquareLayer: [batch_size, num_item_features, embedding_dim]</span>
+<span class="n">squared_sum</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_squared_sum</span><span class="p">(</span><span class="n">item_squared</span><span class="p">)</span>  <span class="c1"># SumPooling: [batch_size, embedding_dim]</span>
+<span class="n">fm_interaction_vector</span> <span class="o">=</span> <span class="n">sum_squared</span> <span class="o">-</span> <span class="n">squared_sum</span>
+<span class="n">fm_interaction_scalar</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">fm_interaction_scalar</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">fm_half_scale</span><span class="p">(</span><span class="n">fm_interaction_vector</span><span class="p">))</span>  <span class="c1"># [batch_size, 1]</span>
 
 <span class="c1"># 组合为物品向量</span>
-<span class="n">first_term</span> <span class="o">=</span> <span class="n">Add</span><span class="p">()([</span><span class="n">item_linear_weights</span><span class="p">,</span> <span class="n">fm_interaction_scalar</span><span class="p">])</span>
-<span class="n">item_vector</span> <span class="o">=</span> <span class="n">Concatenate</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)([</span><span class="n">first_term</span><span class="p">,</span> <span class="n">item_embedding_sum</span><span class="p">])</span>
+<span class="n">first_term</span> <span class="o">=</span> <span class="n">item_linear_weights</span> <span class="o">+</span> <span class="n">fm_interaction_scalar</span>  <span class="c1"># [batch_size, 1]</span>
+<span class="n">item_vector</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">([</span><span class="n">first_term</span><span class="p">,</span> <span class="n">item_embedding_sum</span><span class="p">],</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [batch_size, 1 + embedding_dim]</span>
 </pre></div>
 </div>
-<p>最终通过内积计算匹配分数：<code class="docutils literal notranslate"><span class="pre">fm_score</span> <span class="pre">=</span> <span class="pre">Dot(axes=1)([item_vector,</span> <span class="pre">user_vector])</span></code>。这种设计使得物品向量可以离线预计算，用户向量实时计算，从而支持高效的召回检索。</p>
+<p>最终通过内积计算匹配分数：<code class="docutils literal notranslate"><span class="pre">fm_score</span> <span class="pre">=</span> <span class="pre">torch.sum(item_vector</span> <span class="pre">*</span> <span class="pre">user_vector,</span> <span class="pre">dim=1,</span> <span class="pre">keepdim=True)</span></code>。这种设计使得物品向量可以离线预计算，用户向量实时计算，从而支持高效的召回检索。</p>
 <p>下面训练FM召回模型并评估效果。</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">funrec</span><span class="w"> </span><span class="kn">import</span> <span class="n">run_experiment</span>
 

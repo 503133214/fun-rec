@@ -418,36 +418,46 @@ Towers）：每个任务拥有独立的顶层网络，基于共享表示学习�
 <p>shared-bottom模型构建代码如下，先组装输入到shared-bottom网络中的特征dnn_inputs,
 经过一个shared-bottom
 DNN网络，遍历创建各个任务独立的DNN塔，最后输出多个塔的预估值用于计算Loss。</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">build_shared_bottom_model</span><span class="p">(</span>
-        <span class="n">feature_columns</span><span class="p">,</span>
-        <span class="n">task_name_list</span><span class="p">,</span>
-        <span class="n">share_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="n">task_tower_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="p">):</span>
-    <span class="c1"># 输入层：将原始特征映射为 Keras 输入</span>
-    <span class="n">input_layer_dict</span> <span class="o">=</span> <span class="n">build_input_layer</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">SharedBottomModel</span><span class="p">(</span><span class="n">FunRecModel</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+            <span class="bp">self</span><span class="p">,</span>
+            <span class="n">feature_columns</span><span class="p">,</span>
+            <span class="n">task_name_list</span><span class="p">,</span>
+            <span class="n">share_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="n">task_tower_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="p">):</span>
+        <span class="c1"># 输入层：记录模型需要的原始输入特征名</span>
+        <span class="n">input_layer_dict</span> <span class="o">=</span> <span class="n">build_input_layer</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">input_names</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">input_layer_dict</span><span class="o">.</span><span class="n">keys</span><span class="p">()))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_name_list</span> <span class="o">=</span> <span class="n">task_name_list</span>
 
-    <span class="c1"># 嵌入层：为各特征组创建嵌入表，得到组内嵌入向量</span>
-    <span class="n">embedding_table_dict</span> <span class="o">=</span> <span class="n">build_group_feature_embedding_table_dict</span><span class="p">(</span>
-        <span class="n">feature_columns</span><span class="p">,</span> <span class="n">input_layer_dict</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;embedding/&quot;</span>
-    <span class="p">)</span>
+        <span class="c1"># 嵌入层：为各特征组创建嵌入表</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">embedding</span> <span class="o">=</span> <span class="n">FeatureEmbedding</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;embedding/&quot;</span><span class="p">)</span>
 
-    <span class="c1"># 合并嵌入：将多组嵌入拼接为共享 DNN 的输入</span>
-    <span class="n">dnn_inputs</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span><span class="n">embedding_table_dict</span><span class="p">,</span> <span class="s1">&#39;dnn&#39;</span><span class="p">)</span>
+        <span class="c1"># 共享底座：所有任务共享的特征抽取网络（Shared Bottom）</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">shared_bottom</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span><span class="n">share_dnn_units</span><span class="p">)</span>
 
-    <span class="c1"># 共享底座：所有任务共享的特征抽取网络（Shared Bottom）</span>
-    <span class="n">shared_feature</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span><span class="n">share_dnn_units</span><span class="p">)(</span><span class="n">dnn_inputs</span><span class="p">)</span>
+        <span class="c1"># 任务塔：每个任务一个独立塔 + 概率输出层</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_towers</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">DNNs</span><span class="p">(</span><span class="n">task_tower_dnn_units</span> <span class="o">+</span> <span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">task_name_list</span><span class="p">])</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_outputs</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">PredictLayer</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;task_</span><span class="si">{</span><span class="n">task_name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">task_name</span> <span class="ow">in</span> <span class="n">task_name_list</span><span class="p">])</span>
 
-    <span class="c1"># 任务塔：在共享特征上为每个任务构建独立塔并输出概率</span>
-    <span class="n">task_outputs</span> <span class="o">=</span> <span class="p">[]</span>
-    <span class="k">for</span> <span class="n">task_name</span> <span class="ow">in</span> <span class="n">task_name_list</span><span class="p">:</span>
-        <span class="n">task_logit</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span><span class="n">task_tower_dnn_units</span> <span class="o">+</span> <span class="p">[</span><span class="mi">1</span><span class="p">])(</span><span class="n">shared_feature</span><span class="p">)</span>
-        <span class="n">task_prob</span> <span class="o">=</span> <span class="n">PredictLayer</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;task_</span><span class="si">{</span><span class="n">task_name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)(</span><span class="n">task_logit</span><span class="p">)</span>
-        <span class="n">task_outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">task_prob</span><span class="p">)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">):</span>
+        <span class="c1"># 合并嵌入：将多组嵌入拼接为共享 DNN 的输入</span>
+        <span class="n">embedding_table_dict</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">embedding</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span>
+        <span class="n">dnn_inputs</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span><span class="n">embedding_table_dict</span><span class="p">,</span> <span class="s1">&#39;dnn&#39;</span><span class="p">)</span>
 
-    <span class="c1"># 构建多任务模型：共享底座 + 多任务塔输出</span>
-    <span class="n">model</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">Model</span><span class="p">(</span><span class="n">inputs</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">input_layer_dict</span><span class="o">.</span><span class="n">values</span><span class="p">()),</span> <span class="n">outputs</span><span class="o">=</span><span class="n">task_outputs</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">model</span>
+        <span class="c1"># 共享特征</span>
+        <span class="n">shared_feature</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">shared_bottom</span><span class="p">(</span><span class="n">dnn_inputs</span><span class="p">)</span>
+
+        <span class="c1"># 在共享特征上为每个任务计算 logit 并输出概率</span>
+        <span class="n">task_outputs</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">task_name_list</span><span class="p">)):</span>
+            <span class="n">task_logit</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">task_towers</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">shared_feature</span><span class="p">)</span>
+            <span class="n">task_prob</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">task_outputs</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">task_logit</span><span class="p">)</span>
+            <span class="n">task_outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">task_prob</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">task_outputs</span>
 </pre></div>
 </div>
 <p><strong>训练和评估</strong></p>
@@ -494,52 +504,65 @@ g_t(\boldsymbol{x}) &amp;= \text{softmax}(\boldsymbol{W}_t \boldsymbol{x}) \\
 <p><strong>MMoE代码实践</strong></p>
 <p>MMoE模型构建代码如下，先组装输入到MoE网络中的特征dnn_inputs,
 然后为每个任务创建一个门控网络输出最终融合专家网络的门控向量。最后为每个任务都创建一个任务塔，并且不同任务塔的输入都是对应任务的门控向量和多个专家网络融合后的向量。</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">build_mmoe_model</span><span class="p">(</span>
-        <span class="n">feature_columns</span><span class="p">,</span>
-        <span class="n">task_name_list</span><span class="p">,</span>
-        <span class="n">expert_nums</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
-        <span class="n">expert_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="n">gate_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="n">task_tower_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="p">):</span>
-    <span class="c1"># 输入层：原始特征 → Keras 输入</span>
-    <span class="n">input_layer_dict</span> <span class="o">=</span> <span class="n">build_input_layer</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">MMoEModel</span><span class="p">(</span><span class="n">FunRecModel</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+            <span class="bp">self</span><span class="p">,</span>
+            <span class="n">feature_columns</span><span class="p">,</span>
+            <span class="n">task_name_list</span><span class="p">,</span>
+            <span class="n">expert_nums</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+            <span class="n">expert_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="n">gate_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="n">task_tower_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="p">):</span>
+        <span class="n">input_layer_dict</span> <span class="o">=</span> <span class="n">build_input_layer</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">input_names</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">input_layer_dict</span><span class="o">.</span><span class="n">keys</span><span class="p">()))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_name_list</span> <span class="o">=</span> <span class="n">task_name_list</span>
 
-    <span class="c1"># 嵌入层：为各特征组创建嵌入表，得到组内嵌入向量</span>
-    <span class="n">embedding_table_dict</span> <span class="o">=</span> <span class="n">build_group_feature_embedding_table_dict</span><span class="p">(</span>
-        <span class="n">feature_columns</span><span class="p">,</span> <span class="n">input_layer_dict</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;embedding/&quot;</span>
-    <span class="p">)</span>
+        <span class="c1"># 嵌入层：为各特征组创建嵌入表</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">embedding</span> <span class="o">=</span> <span class="n">FeatureEmbedding</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;embedding/&quot;</span><span class="p">)</span>
 
-    <span class="c1"># 合并嵌入：拼接为专家与门控的共同输入</span>
-    <span class="n">dnn_inputs</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span><span class="n">embedding_table_dict</span><span class="p">,</span> <span class="s1">&#39;dnn&#39;</span><span class="p">)</span>
+        <span class="c1"># 共享专家：多个并行 DNN（专家）供所有任务共享</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">experts</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">DNNs</span><span class="p">(</span><span class="n">expert_dnn_units</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;expert_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">expert_nums</span><span class="p">)])</span>
 
-    <span class="c1"># 共享专家：多个并行 DNN（专家）供所有任务共享</span>
-    <span class="n">expert_outputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">DNNs</span><span class="p">(</span><span class="n">expert_dnn_units</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;expert_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)(</span><span class="n">dnn_inputs</span><span class="p">)</span>
-                      <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">expert_nums</span><span class="p">)]</span>
-    <span class="c1"># 形状 [B, E, D]：按专家维度堆叠，便于后续加权求和</span>
-    <span class="n">experts</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span><span class="k">lambda</span> <span class="n">xs</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="n">xs</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">))(</span><span class="n">expert_outputs</span><span class="p">)</span>
+        <span class="c1"># 任务门控：每个任务一个门控 DNN + softmax 输出层</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">gate_dnns</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">DNNs</span><span class="p">(</span><span class="n">gate_dnn_units</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;task_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">_gates&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">task_name_list</span><span class="p">))])</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">gate_softmax</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">Dense</span><span class="p">(</span><span class="n">expert_nums</span><span class="p">,</span> <span class="n">use_bias</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s1">&#39;softmax&#39;</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;task_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">_softmax&quot;</span><span class="p">)</span>
+             <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">task_name_list</span><span class="p">))])</span>
 
-    <span class="c1"># 任务门控：每个任务产生 softmax 权重，对专家加权融合</span>
-    <span class="n">task_features</span> <span class="o">=</span> <span class="p">[]</span>
-    <span class="k">for</span> <span class="n">idx</span><span class="p">,</span> <span class="n">task_name</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">task_name_list</span><span class="p">):</span>
-        <span class="n">gate_hidden</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span><span class="n">gate_dnn_units</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;task_</span><span class="si">{</span><span class="n">idx</span><span class="si">}</span><span class="s2">_gate_mlp&quot;</span><span class="p">)(</span><span class="n">dnn_inputs</span><span class="p">)</span>
-        <span class="n">gate_weights</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Dense</span><span class="p">(</span><span class="n">expert_nums</span><span class="p">,</span> <span class="n">use_bias</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span>
-                                             <span class="n">activation</span><span class="o">=</span><span class="s1">&#39;softmax&#39;</span><span class="p">,</span>
-                                             <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;task_</span><span class="si">{</span><span class="n">idx</span><span class="si">}</span><span class="s2">_gate_softmax&quot;</span><span class="p">)(</span><span class="n">gate_hidden</span><span class="p">)</span>  <span class="c1"># [B, E]</span>
-        <span class="c1"># 加权融合：einsum(&#39;be,bed-&gt;bd&#39;) == sum_e w_e * expert_e</span>
-        <span class="n">task_mix</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;be,bed-&gt;bd&#39;</span><span class="p">,</span> <span class="n">x</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">x</span><span class="p">[</span><span class="mi">1</span><span class="p">]))([</span><span class="n">gate_weights</span><span class="p">,</span> <span class="n">experts</span><span class="p">])</span>
-        <span class="n">task_features</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">task_mix</span><span class="p">)</span>
+        <span class="c1"># 任务塔</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_towers</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">DNNs</span><span class="p">(</span><span class="n">task_tower_dnn_units</span> <span class="o">+</span> <span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">task_name_list</span><span class="p">])</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_outputs</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">PredictLayer</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;task_</span><span class="si">{</span><span class="n">task_name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span> <span class="k">for</span> <span class="n">task_name</span> <span class="ow">in</span> <span class="n">task_name_list</span><span class="p">])</span>
 
-    <span class="c1"># 任务塔：基于融合特征为每个任务建塔并输出概率</span>
-    <span class="n">task_outputs</span> <span class="o">=</span> <span class="p">[]</span>
-    <span class="k">for</span> <span class="n">task_name</span><span class="p">,</span> <span class="n">task_feat</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">task_name_list</span><span class="p">,</span> <span class="n">task_features</span><span class="p">):</span>
-        <span class="n">task_logit</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span><span class="n">task_tower_dnn_units</span> <span class="o">+</span> <span class="p">[</span><span class="mi">1</span><span class="p">])(</span><span class="n">task_feat</span><span class="p">)</span>
-        <span class="n">task_prob</span> <span class="o">=</span> <span class="n">PredictLayer</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;task_</span><span class="si">{</span><span class="n">task_name</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)(</span><span class="n">task_logit</span><span class="p">)</span>
-        <span class="n">task_outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">task_prob</span><span class="p">)</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">):</span>
+        <span class="c1"># 合并嵌入：拼接为专家与门控的共同输入</span>
+        <span class="n">embedding_table_dict</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">embedding</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span>
+        <span class="n">dnn_inputs</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span><span class="n">embedding_table_dict</span><span class="p">,</span> <span class="s1">&#39;dnn&#39;</span><span class="p">)</span>
 
-    <span class="c1"># 构建模型：共享专家 + 任务门控 + 任务塔</span>
-    <span class="n">model</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">Model</span><span class="p">(</span><span class="n">inputs</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">input_layer_dict</span><span class="o">.</span><span class="n">values</span><span class="p">()),</span> <span class="n">outputs</span><span class="o">=</span><span class="n">task_outputs</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">model</span>
+        <span class="c1"># 形状 [B, E, D]：按专家维度堆叠，便于后续加权求和</span>
+        <span class="n">expert_outputs</span> <span class="o">=</span> <span class="p">[</span><span class="n">expert</span><span class="p">(</span><span class="n">dnn_inputs</span><span class="p">)</span> <span class="k">for</span> <span class="n">expert</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">experts</span><span class="p">]</span>
+        <span class="n">experts</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="n">expert_outputs</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+
+        <span class="c1"># 任务门控：每个任务产生 softmax 权重，对专家加权融合</span>
+        <span class="n">task_features</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">task_name_list</span><span class="p">)):</span>
+            <span class="n">gate_hidden</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">gate_dnns</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">dnn_inputs</span><span class="p">)</span>
+            <span class="n">gate_weights</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">gate_softmax</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">gate_hidden</span><span class="p">)</span>  <span class="c1"># [B, E]</span>
+            <span class="c1"># 加权融合：sum_e w_e * expert_e，[B, E, 1] * [B, E, D] -&gt; [B, D]</span>
+            <span class="n">task_mix</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">gate_weights</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span> <span class="o">*</span> <span class="n">experts</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+            <span class="n">task_features</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">task_mix</span><span class="p">)</span>
+
+        <span class="c1"># 任务塔：基于融合特征为每个任务输出概率</span>
+        <span class="n">task_outputs</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">task_feat</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="n">task_features</span><span class="p">):</span>
+            <span class="n">task_logit</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">task_towers</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">task_feat</span><span class="p">)</span>
+            <span class="n">task_prob</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">task_outputs</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">task_logit</span><span class="p">)</span>
+            <span class="n">task_outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">task_prob</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">task_outputs</span>
 </pre></div>
 </div>
 <p><strong>训练和评估</strong></p>
@@ -610,51 +633,42 @@ Control）结构，其核心思想是通过硬性结构约束，显式分离共�
 <li><p><span class="math notranslate nohighlight">\(g_{t, M+j}\)</span>：分配给任务<span class="math notranslate nohighlight">\(t\)</span>第<span class="math notranslate nohighlight">\(j\)</span>个专属专家的权重。</p></li>
 </ul>
 <p><strong>CGC核心代码为：</strong></p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">cgc_net</span><span class="p">(</span>
-        <span class="n">input_list</span><span class="p">,</span>
-        <span class="n">task_num</span><span class="p">,</span>
-        <span class="n">task_expert_num</span><span class="p">,</span>
-        <span class="n">shared_expert_num</span><span class="p">,</span>
-        <span class="n">task_expert_dnn_units</span><span class="p">,</span>
-        <span class="n">shared_expert_dnn_units</span><span class="p">,</span>
-        <span class="n">task_gate_dnn_units</span><span class="p">,</span>
-        <span class="n">shared_gate_dnn_units</span><span class="p">,</span>
-        <span class="n">leval_name</span><span class="o">=</span><span class="kc">None</span><span class="p">,</span>
-        <span class="n">is_last</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">cgc_net</span><span class="p">(</span><span class="n">input_list</span><span class="p">,</span> <span class="n">task_num</span><span class="p">,</span> <span class="n">task_expert_num</span><span class="p">,</span> <span class="n">shared_expert_num</span><span class="p">,</span>
+            <span class="n">cgc_layers</span><span class="p">,</span> <span class="n">is_last</span><span class="o">=</span><span class="kc">False</span><span class="p">):</span>
 <span class="w">    </span><span class="sd">&quot;&quot;&quot;CGC（共享专家 + 任务门控）核心结构（简化版）</span>
 <span class="sd">    - 每个任务：拥有若干 Task-Experts；</span>
 <span class="sd">    - 全局：拥有若干 Shared-Experts；</span>
 <span class="sd">    - 每个任务 Gate 产生 softmax 权重，对其 Task-Experts 与 Shared-Experts 加权融合；</span>
 <span class="sd">    - 若非最后一层：再用 Shared-Gate 融合所有任务的 Task-Experts 与 Shared-Experts，供下一层共享使用。</span>
 <span class="sd">    input_list：为方便处理，给每个任务复制一份相同输入，最后一个为共享输入。</span>
+<span class="sd">    cgc_layers：CGCNet 模块，在 __init__ 中预先创建好本层所有专家与门控（DNNs / Dense）。</span>
 <span class="sd">    &quot;&quot;&quot;</span>
 
-    <span class="c1"># 任务专家：每个任务创建 task_expert_num 个专家</span>
+    <span class="c1"># 任务专家：每个任务 task_expert_num 个专家</span>
     <span class="n">task_expert_list</span> <span class="o">=</span> <span class="p">[]</span>
     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">task_num</span><span class="p">):</span>
         <span class="n">task_expert_list</span><span class="o">.</span><span class="n">append</span><span class="p">([</span>
-            <span class="n">DNNs</span><span class="p">(</span><span class="n">task_expert_dnn_units</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">leval_name</span><span class="si">}</span><span class="s2">_task_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">_expert_</span><span class="si">{</span><span class="n">j</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)(</span><span class="n">input_list</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
+            <span class="n">cgc_layers</span><span class="o">.</span><span class="n">task_experts</span><span class="p">[</span><span class="n">i</span><span class="p">][</span><span class="n">j</span><span class="p">](</span><span class="n">input_list</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
             <span class="k">for</span> <span class="n">j</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">task_expert_num</span><span class="p">)</span>
         <span class="p">])</span>
 
-    <span class="c1"># 共享专家：创建 shared_expert_num 个专家（共享输入使用 input_list[-1]）</span>
+    <span class="c1"># 共享专家：shared_expert_num 个专家（共享输入使用 input_list[-1]）</span>
     <span class="n">shared_expert_list</span> <span class="o">=</span> <span class="p">[</span>
-        <span class="n">DNNs</span><span class="p">(</span><span class="n">shared_expert_dnn_units</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">leval_name</span><span class="si">}</span><span class="s2">_shared_expert_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)(</span><span class="n">input_list</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
+        <span class="n">cgc_layers</span><span class="o">.</span><span class="n">shared_experts</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">input_list</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
         <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">shared_expert_num</span><span class="p">)</span>
     <span class="p">]</span>
 
     <span class="c1"># 任务门控与融合：对当前任务的（Task + Shared）专家集合进行 softmax 加权求和</span>
     <span class="n">cgc_outputs</span> <span class="o">=</span> <span class="p">[]</span>
-    <span class="n">fusion_expert_num</span> <span class="o">=</span> <span class="n">task_expert_num</span> <span class="o">+</span> <span class="n">shared_expert_num</span>
     <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">task_num</span><span class="p">):</span>
         <span class="n">cur_experts</span> <span class="o">=</span> <span class="n">task_expert_list</span><span class="p">[</span><span class="n">i</span><span class="p">]</span> <span class="o">+</span> <span class="n">shared_expert_list</span>
-        <span class="n">experts</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span><span class="k">lambda</span> <span class="n">xs</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="n">xs</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">))(</span><span class="n">cur_experts</span><span class="p">)</span>  <span class="c1"># [B, E, D]</span>
+        <span class="n">experts</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="n">cur_experts</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, E, D]</span>
 
-        <span class="n">gate_hidden</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span><span class="n">task_gate_dnn_units</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">leval_name</span><span class="si">}</span><span class="s2">_task_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">_gate&quot;</span><span class="p">)(</span><span class="n">input_list</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
-        <span class="n">gate_weights</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Dense</span><span class="p">(</span><span class="n">fusion_expert_num</span><span class="p">,</span> <span class="n">use_bias</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s1">&#39;softmax&#39;</span><span class="p">)(</span><span class="n">gate_hidden</span><span class="p">)</span>  <span class="c1"># [B, E]</span>
+        <span class="n">gate_hidden</span> <span class="o">=</span> <span class="n">cgc_layers</span><span class="o">.</span><span class="n">task_gate_dnns</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">input_list</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
+        <span class="n">gate_weights</span> <span class="o">=</span> <span class="n">cgc_layers</span><span class="o">.</span><span class="n">task_gate_softmax</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">gate_hidden</span><span class="p">)</span>  <span class="c1"># [B, E]</span>
 
-        <span class="c1"># 加权融合：einsum(&#39;be,bed-&gt;bd&#39;) == sum_e w_e * expert_e</span>
-        <span class="n">fused</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;be,bed-&gt;bd&#39;</span><span class="p">,</span> <span class="n">x</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">x</span><span class="p">[</span><span class="mi">1</span><span class="p">]))([</span><span class="n">gate_weights</span><span class="p">,</span> <span class="n">experts</span><span class="p">])</span>
+        <span class="c1"># 加权融合：sum_e w_e * expert_e，[B, E, 1] * [B, E, D] -&gt; [B, D]</span>
+        <span class="n">fused</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">gate_weights</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span> <span class="o">*</span> <span class="n">experts</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
         <span class="n">cgc_outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">fused</span><span class="p">)</span>
 
     <span class="c1"># 若非最后一层：共享门控融合所有任务专家与共享专家，作为下一层共享输入</span>
@@ -662,12 +676,11 @@ Control）结构，其核心思想是通过硬性结构约束，显式分离共�
         <span class="c1"># 展平所有任务的专家 + 共享专家</span>
         <span class="n">all_task_experts</span> <span class="o">=</span> <span class="p">[</span><span class="n">e</span> <span class="k">for</span> <span class="n">task</span> <span class="ow">in</span> <span class="n">task_expert_list</span> <span class="k">for</span> <span class="n">e</span> <span class="ow">in</span> <span class="n">task</span><span class="p">]</span>
         <span class="n">cur_experts</span> <span class="o">=</span> <span class="n">all_task_experts</span> <span class="o">+</span> <span class="n">shared_expert_list</span>
-        <span class="n">experts_all</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span><span class="k">lambda</span> <span class="n">xs</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="n">xs</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">))(</span><span class="n">cur_experts</span><span class="p">)</span>  <span class="c1"># [B, E_all, D]</span>
-        <span class="n">cur_expert_num</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">cur_experts</span><span class="p">)</span>
+        <span class="n">experts_all</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">stack</span><span class="p">(</span><span class="n">cur_experts</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, E_all, D]</span>
 
-        <span class="n">shared_gate_hidden</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span><span class="n">shared_gate_dnn_units</span><span class="p">,</span> <span class="n">name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;</span><span class="si">{</span><span class="n">leval_name</span><span class="si">}</span><span class="s2">_shared_gate&quot;</span><span class="p">)(</span><span class="n">input_list</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
-        <span class="n">shared_gate_weights</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Dense</span><span class="p">(</span><span class="n">cur_expert_num</span><span class="p">,</span> <span class="n">use_bias</span><span class="o">=</span><span class="kc">False</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s1">&#39;softmax&#39;</span><span class="p">)(</span><span class="n">shared_gate_hidden</span><span class="p">)</span>  <span class="c1"># [B, E_all]</span>
-        <span class="n">shared_fused</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">einsum</span><span class="p">(</span><span class="s1">&#39;be,bed-&gt;bd&#39;</span><span class="p">,</span> <span class="n">x</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">x</span><span class="p">[</span><span class="mi">1</span><span class="p">]))([</span><span class="n">shared_gate_weights</span><span class="p">,</span> <span class="n">experts_all</span><span class="p">])</span>
+        <span class="n">shared_gate_hidden</span> <span class="o">=</span> <span class="n">cgc_layers</span><span class="o">.</span><span class="n">shared_gate_dnn</span><span class="p">(</span><span class="n">input_list</span><span class="p">[</span><span class="o">-</span><span class="mi">1</span><span class="p">])</span>
+        <span class="n">shared_gate_weights</span> <span class="o">=</span> <span class="n">cgc_layers</span><span class="o">.</span><span class="n">shared_gate_softmax</span><span class="p">(</span><span class="n">shared_gate_hidden</span><span class="p">)</span>  <span class="c1"># [B, E_all]</span>
+        <span class="n">shared_fused</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">shared_gate_weights</span><span class="o">.</span><span class="n">unsqueeze</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">)</span> <span class="o">*</span> <span class="n">experts_all</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># [B, D]</span>
         <span class="n">cgc_outputs</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">shared_fused</span><span class="p">)</span>
 
     <span class="k">return</span> <span class="n">cgc_outputs</span>
@@ -714,53 +727,67 @@ Control）结构，其核心思想是通过硬性结构约束，显式分离共�
 </li>
 </ul>
 <p><strong>PLE模型的核心代码：</strong></p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">build_ple_model</span><span class="p">(</span>
-        <span class="n">feature_columns</span><span class="p">,</span>
-        <span class="n">task_name_list</span><span class="p">,</span>
-        <span class="n">ple_level_nums</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
-        <span class="n">task_expert_num</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
-        <span class="n">shared_expert_num</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
-        <span class="n">task_expert_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="n">shared_expert_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="n">task_gate_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="n">shared_gate_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="n">task_tower_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
-        <span class="p">):</span>
-    <span class="c1"># 1) 输入与嵌入：构建输入层/分组嵌入，拼接为 PLE 的共享输入</span>
-    <span class="n">input_layer_dict</span> <span class="o">=</span> <span class="n">build_input_layer</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">)</span>
-    <span class="n">group_embedding_feature_dict</span> <span class="o">=</span> <span class="n">build_group_feature_embedding_table_dict</span><span class="p">(</span>
-        <span class="n">feature_columns</span><span class="p">,</span> <span class="n">input_layer_dict</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;embedding/&quot;</span>
-    <span class="p">)</span>
-    <span class="n">dnn_inputs</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span><span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s1">&#39;dnn&#39;</span><span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">class</span><span class="w"> </span><span class="nc">PLEModel</span><span class="p">(</span><span class="n">FunRecModel</span><span class="p">):</span>
+    <span class="k">def</span><span class="w"> </span><span class="fm">__init__</span><span class="p">(</span>
+            <span class="bp">self</span><span class="p">,</span>
+            <span class="n">feature_columns</span><span class="p">,</span>
+            <span class="n">task_name_list</span><span class="p">,</span>
+            <span class="n">ple_level_nums</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span>
+            <span class="n">task_expert_num</span><span class="o">=</span><span class="mi">4</span><span class="p">,</span>
+            <span class="n">shared_expert_num</span><span class="o">=</span><span class="mi">2</span><span class="p">,</span>
+            <span class="n">task_expert_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="n">shared_expert_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="n">task_gate_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="n">shared_gate_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="n">task_tower_dnn_units</span><span class="o">=</span><span class="p">[</span><span class="mi">128</span><span class="p">,</span> <span class="mi">64</span><span class="p">],</span>
+            <span class="p">):</span>
+        <span class="n">input_layer_dict</span> <span class="o">=</span> <span class="n">build_input_layer</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">)</span>
+        <span class="nb">super</span><span class="p">()</span><span class="o">.</span><span class="fm">__init__</span><span class="p">(</span><span class="n">input_names</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">input_layer_dict</span><span class="o">.</span><span class="n">keys</span><span class="p">()))</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_num</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">task_name_list</span><span class="p">)</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">ple_level_nums</span> <span class="o">=</span> <span class="n">ple_level_nums</span>
 
-    <span class="c1"># 2) 级联 PLE（CGC）层：每层包含“任务专家 + 共享专家 + 门控”，最后一层仅输出任务特征</span>
-    <span class="n">task_num</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">task_name_list</span><span class="p">)</span>
-    <span class="n">ple_input_list</span> <span class="o">=</span> <span class="p">[</span><span class="n">dnn_inputs</span><span class="p">]</span> <span class="o">*</span> <span class="p">(</span><span class="n">task_num</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>  <span class="c1"># 前 task_num 为各任务输入，末尾为共享输入</span>
-    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">ple_level_nums</span><span class="p">):</span>
-        <span class="n">is_last</span> <span class="o">=</span> <span class="p">(</span><span class="n">i</span> <span class="o">==</span> <span class="n">ple_level_nums</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span>
-        <span class="n">ple_input_list</span> <span class="o">=</span> <span class="n">cgc_net</span><span class="p">(</span>
-            <span class="n">ple_input_list</span><span class="p">,</span>
-            <span class="n">task_num</span><span class="p">,</span>
-            <span class="n">task_expert_num</span><span class="p">,</span>
-            <span class="n">shared_expert_num</span><span class="p">,</span>
-            <span class="n">task_expert_dnn_units</span><span class="p">,</span>
-            <span class="n">shared_expert_dnn_units</span><span class="p">,</span>
-            <span class="n">task_gate_dnn_units</span><span class="p">,</span>
-            <span class="n">shared_gate_dnn_units</span><span class="p">,</span>
-            <span class="n">leval_name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;cgc_level_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
-            <span class="n">is_last</span><span class="o">=</span><span class="n">is_last</span>
-        <span class="p">)</span>
+        <span class="c1"># 1) 嵌入层：为各特征组创建嵌入表</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">embedding</span> <span class="o">=</span> <span class="n">FeatureEmbedding</span><span class="p">(</span><span class="n">feature_columns</span><span class="p">,</span> <span class="n">prefix</span><span class="o">=</span><span class="s2">&quot;embedding/&quot;</span><span class="p">)</span>
 
-    <span class="c1"># 3) 任务塔与输出：将各任务特征送入塔 DNN，得到每个任务的概率输出</span>
-    <span class="n">task_output_list</span> <span class="o">=</span> <span class="p">[]</span>
-    <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">task_num</span><span class="p">):</span>
-        <span class="n">task_logit</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span><span class="n">task_tower_dnn_units</span> <span class="o">+</span> <span class="p">[</span><span class="mi">1</span><span class="p">])(</span><span class="n">ple_input_list</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
-        <span class="n">task_prob</span> <span class="o">=</span> <span class="n">PredictLayer</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;task_&quot;</span> <span class="o">+</span> <span class="n">task_name_list</span><span class="p">[</span><span class="n">i</span><span class="p">])(</span><span class="n">task_logit</span><span class="p">)</span>
-        <span class="n">task_output_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">task_prob</span><span class="p">)</span>
+        <span class="c1"># 2) 级联 PLE（CGC）层：每层包含“任务专家 + 共享专家 + 门控”，最后一层不需要共享门控</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">cgc_layers</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">([</span>
+            <span class="n">CGCNet</span><span class="p">(</span>
+                <span class="bp">self</span><span class="o">.</span><span class="n">task_num</span><span class="p">,</span>
+                <span class="n">task_expert_num</span><span class="p">,</span>
+                <span class="n">shared_expert_num</span><span class="p">,</span>
+                <span class="n">task_expert_dnn_units</span><span class="p">,</span>
+                <span class="n">shared_expert_dnn_units</span><span class="p">,</span>
+                <span class="n">task_gate_dnn_units</span><span class="p">,</span>
+                <span class="n">shared_gate_dnn_units</span><span class="p">,</span>
+                <span class="n">leval_name</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;cgc_level_</span><span class="si">{</span><span class="n">i</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">,</span>
+                <span class="n">is_last</span><span class="o">=</span><span class="p">(</span><span class="n">i</span> <span class="o">==</span> <span class="n">ple_level_nums</span> <span class="o">-</span> <span class="mi">1</span><span class="p">),</span>
+            <span class="p">)</span>
+            <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">ple_level_nums</span><span class="p">)</span>
+        <span class="p">])</span>
 
-    <span class="c1"># 4) 构建模型：输入为所有原始输入层，输出为各任务概率</span>
-    <span class="n">model</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">Model</span><span class="p">(</span><span class="n">inputs</span><span class="o">=</span><span class="nb">list</span><span class="p">(</span><span class="n">input_layer_dict</span><span class="o">.</span><span class="n">values</span><span class="p">()),</span> <span class="n">outputs</span><span class="o">=</span><span class="n">task_output_list</span><span class="p">)</span>
-    <span class="k">return</span> <span class="n">model</span>
+        <span class="c1"># 3) 任务塔与输出层</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_towers</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">DNNs</span><span class="p">(</span><span class="n">task_tower_dnn_units</span> <span class="o">+</span> <span class="p">[</span><span class="mi">1</span><span class="p">])</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">task_num</span><span class="p">)])</span>
+        <span class="bp">self</span><span class="o">.</span><span class="n">task_outputs</span> <span class="o">=</span> <span class="n">nn</span><span class="o">.</span><span class="n">ModuleList</span><span class="p">(</span>
+            <span class="p">[</span><span class="n">PredictLayer</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;task_&quot;</span> <span class="o">+</span> <span class="n">task_name</span><span class="p">)</span> <span class="k">for</span> <span class="n">task_name</span> <span class="ow">in</span> <span class="n">task_name_list</span><span class="p">])</span>
+
+    <span class="k">def</span><span class="w"> </span><span class="nf">forward</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">inputs</span><span class="p">):</span>
+        <span class="c1"># 输入与嵌入：拼接为 PLE 的共享输入</span>
+        <span class="n">group_embedding_feature_dict</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">embedding</span><span class="p">(</span><span class="n">inputs</span><span class="p">)</span>
+        <span class="n">dnn_inputs</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span><span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s1">&#39;dnn&#39;</span><span class="p">)</span>
+
+        <span class="c1"># 逐层 CGC：每层内部调用 cgc_net，最后一层仅输出任务特征</span>
+        <span class="n">ple_input_list</span> <span class="o">=</span> <span class="p">[</span><span class="n">dnn_inputs</span><span class="p">]</span> <span class="o">*</span> <span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">task_num</span> <span class="o">+</span> <span class="mi">1</span><span class="p">)</span>  <span class="c1"># 前 task_num 为各任务输入，末尾为共享输入</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">ple_level_nums</span><span class="p">):</span>
+            <span class="n">ple_input_list</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">cgc_layers</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">ple_input_list</span><span class="p">)</span>
+
+        <span class="c1"># 将各任务特征送入塔 DNN，得到每个任务的概率输出</span>
+        <span class="n">task_output_list</span> <span class="o">=</span> <span class="p">[]</span>
+        <span class="k">for</span> <span class="n">i</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">task_num</span><span class="p">):</span>
+            <span class="n">task_logit</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">task_towers</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">ple_input_list</span><span class="p">[</span><span class="n">i</span><span class="p">])</span>
+            <span class="n">task_prob</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">task_outputs</span><span class="p">[</span><span class="n">i</span><span class="p">](</span><span class="n">task_logit</span><span class="p">)</span>
+            <span class="n">task_output_list</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">task_prob</span><span class="p">)</span>
+        <span class="k">return</span> <span class="n">task_output_list</span>
 </pre></div>
 </div>
 <p><strong>训练和评估</strong></p>

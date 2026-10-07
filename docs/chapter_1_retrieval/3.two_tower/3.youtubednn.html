@@ -412,7 +412,11 @@ Softmax进行高效训练。</p>
 <section id="id3">
 <h2><span class="section-number">2.3.3.2. </span>代码实践<a class="headerlink" href="#id3" title="Permalink to this heading">¶</a></h2>
 <p>YouTubeDNN的用户塔设计体现了“非对称”的思想，它整合了多种用户特征和历史行为序列：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 整合用户特征和历史行为序列</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># __init__ 中定义用户塔：DNN + L2 归一化</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">user_dnn</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span><span class="n">units</span><span class="o">=</span><span class="n">dnn_units</span> <span class="o">+</span> <span class="p">[</span><span class="n">emb_dim</span><span class="p">],</span> <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;relu&quot;</span><span class="p">,</span> <span class="n">use_bn</span><span class="o">=</span><span class="kc">False</span><span class="p">)</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">user_l2_norm</span> <span class="o">=</span> <span class="n">L2NormalizeLayer</span><span class="p">(</span><span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)</span>
+
+<span class="c1"># 前向计算：整合用户特征和历史行为序列</span>
 <span class="n">user_feature_embedding</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span>
     <span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s2">&quot;user_dnn&quot;</span>
 <span class="p">)</span>  <span class="c1"># B x (D * N)</span>
@@ -421,38 +425,38 @@ Softmax进行高效训练。</p>
     <span class="n">hist_seq_embedding</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span>
         <span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s2">&quot;raw_hist_seq&quot;</span>
     <span class="p">)</span>  <span class="c1"># B x D</span>
-    <span class="n">user_dnn_inputs</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">concat</span><span class="p">(</span>
-        <span class="p">[</span><span class="n">user_feature_embedding</span><span class="p">,</span> <span class="n">hist_seq_embedding</span><span class="p">],</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span>
+    <span class="n">user_dnn_inputs</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">cat</span><span class="p">(</span>
+        <span class="p">[</span><span class="n">user_feature_embedding</span><span class="p">,</span> <span class="n">hist_seq_embedding</span><span class="p">],</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span>
     <span class="p">)</span>  <span class="c1"># B x (D * N + D)</span>
 <span class="k">else</span><span class="p">:</span>
     <span class="n">user_dnn_inputs</span> <span class="o">=</span> <span class="n">user_feature_embedding</span>
 
-<span class="c1"># 构建用户塔：输出归一化的用户向量</span>
-<span class="n">user_dnn_output</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span>
-    <span class="n">units</span><span class="o">=</span><span class="n">dnn_units</span> <span class="o">+</span> <span class="p">[</span><span class="n">emb_dim</span><span class="p">],</span> <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;relu&quot;</span><span class="p">,</span> <span class="n">use_bn</span><span class="o">=</span><span class="kc">False</span>
-<span class="p">)(</span><span class="n">user_dnn_inputs</span><span class="p">)</span>
-<span class="n">user_dnn_output</span> <span class="o">=</span> <span class="n">L2NormalizeLayer</span><span class="p">(</span><span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)(</span><span class="n">user_dnn_output</span><span class="p">)</span>
+<span class="c1"># 用户塔：输出归一化的用户向量</span>
+<span class="n">user_dnn_output</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_dnn</span><span class="p">(</span><span class="n">user_dnn_inputs</span><span class="p">)</span>  <span class="c1"># B x emb_dim</span>
+<span class="n">user_dnn_output</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_l2_norm</span><span class="p">(</span><span class="n">user_dnn_output</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>物品塔则采用简化设计，直接使用物品Embedding表：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 物品Embedding表（从特征列配置中获取）</span>
-<span class="n">item_embedding_table</span> <span class="o">=</span> <span class="n">embedding_table_dict</span><span class="p">[</span><span class="n">label_name</span><span class="p">]</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 物品Embedding表（与用户塔共享的特征Embedding表）</span>
+<span class="n">item_embedding_table</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">embedding</span><span class="o">.</span><span class="n">embedding_table_dict</span><span class="p">[</span><span class="n">label_name</span><span class="p">]</span>
 
-<span class="c1"># 为评估构建物品模型</span>
-<span class="n">output_item_embedding</span> <span class="o">=</span> <span class="n">SqueezeLayer</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)(</span>
-    <span class="n">item_embedding_table</span><span class="p">(</span><span class="n">input_layer_dict</span><span class="p">[</span><span class="n">label_name</span><span class="p">])</span>
+<span class="c1"># 物品塔（评估用）：B x 1 -&gt; B x 1 x D -&gt; B x D，再做 L2 归一化</span>
+<span class="n">output_item_embedding</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_squeeze</span><span class="p">(</span>
+    <span class="n">item_embedding_table</span><span class="p">(</span><span class="n">inputs</span><span class="p">[</span><span class="n">label_name</span><span class="p">])</span>
 <span class="p">)</span>
-<span class="n">output_item_embedding</span> <span class="o">=</span> <span class="n">L2NormalizeLayer</span><span class="p">(</span><span class="n">axis</span><span class="o">=-</span><span class="mi">1</span><span class="p">)(</span><span class="n">output_item_embedding</span><span class="p">)</span>
+<span class="n">output_item_embedding</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_l2_norm</span><span class="p">(</span><span class="n">output_item_embedding</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>训练时采用Sampled
 Softmax优化，将百万级的多分类问题转化为高效的采样学习：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 构建采样softmax层</span>
-<span class="n">sampled_softmax_layer</span> <span class="o">=</span> <span class="n">SampledSoftmaxLayer</span><span class="p">(</span><span class="n">item_vocab_size</span><span class="p">,</span> <span class="n">neg_sample</span><span class="p">,</span> <span class="n">emb_dim</span><span class="p">)</span>
-<span class="n">output</span> <span class="o">=</span> <span class="n">sampled_softmax_layer</span><span class="p">([</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 构建采样softmax层（__init__ 中定义）</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">sampled_softmax_layer</span> <span class="o">=</span> <span class="n">SampledSoftmaxLayer</span><span class="p">(</span><span class="n">item_vocab_size</span><span class="p">,</span> <span class="n">neg_sample</span><span class="p">,</span> <span class="n">emb_dim</span><span class="p">)</span>
+
+<span class="c1"># 前向计算：输出每个样本的采样softmax损失 B x 1</span>
+<span class="n">output</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">sampled_softmax_layer</span><span class="p">([</span>
     <span class="n">item_embedding_table</span><span class="o">.</span><span class="n">embeddings</span><span class="p">,</span>
     <span class="n">user_dnn_output</span><span class="p">,</span>
-    <span class="n">input_layer_dict</span><span class="p">[</span><span class="n">label_name</span><span class="p">]</span>
+    <span class="n">inputs</span><span class="p">[</span><span class="n">label_name</span><span class="p">]</span>
 <span class="p">])</span>
 </pre></div>
 </div>

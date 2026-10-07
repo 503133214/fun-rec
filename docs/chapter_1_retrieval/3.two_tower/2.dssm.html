@@ -418,7 +418,15 @@ Structured Semantic Model, DSSM） <span id="id1">(<a class="reference internal"
 <p>这里的温度系数<span class="math notranslate nohighlight">\(\tau\)</span>看起来是个简单的除法操作，但实际上它对模型的训练效果有着深远的影响。从数学角度来看，温度系数本质上是在缩放logits，进而改变Softmax函数的输出分布形状。当我们设置<span class="math notranslate nohighlight">\(\tau &lt; 1\)</span>时，相似度的差异会被放大，这意味着模型会对高分样本给出更高的概率，预测变得更加“确定”；相反，当<span class="math notranslate nohighlight">\(\tau &gt; 1\)</span>时，分布会变得更加平滑，模型的预测也更加保守。
 ## 代码实践</p>
 <p>DSSM的实现核心在于构建独立的用户塔和物品塔，每个塔都是一个深度神经网络：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 拼接用户侧和物品侧特征</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># __init__ 中：构建用户塔和物品塔（深度神经网络）</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">user_dnn</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span>
+    <span class="n">units</span><span class="o">=</span><span class="n">dnn_units</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;tanh&quot;</span><span class="p">,</span> <span class="n">dropout_rate</span><span class="o">=</span><span class="n">dropout_rate</span><span class="p">,</span> <span class="n">use_bn</span><span class="o">=</span><span class="kc">True</span>
+<span class="p">)</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">item_dnn</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span>
+    <span class="n">units</span><span class="o">=</span><span class="n">dnn_units</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;tanh&quot;</span><span class="p">,</span> <span class="n">dropout_rate</span><span class="o">=</span><span class="n">dropout_rate</span><span class="p">,</span> <span class="n">use_bn</span><span class="o">=</span><span class="kc">True</span>
+<span class="p">)</span>
+
+<span class="c1"># forward 中：拼接用户侧和物品侧特征</span>
 <span class="n">user_feature</span> <span class="o">=</span> <span class="n">concat_group_embedding</span><span class="p">(</span>
     <span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">flatten</span><span class="o">=</span><span class="kc">True</span>
 <span class="p">)</span>  <span class="c1"># B x (N*D)</span>
@@ -426,26 +434,25 @@ Structured Semantic Model, DSSM） <span id="id1">(<a class="reference internal"
     <span class="n">group_embedding_feature_dict</span><span class="p">,</span> <span class="s2">&quot;item&quot;</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">flatten</span><span class="o">=</span><span class="kc">True</span>
 <span class="p">)</span>  <span class="c1"># B x (N*D)</span>
 
-<span class="c1"># 构建用户塔和物品塔（深度神经网络）</span>
-<span class="n">user_tower</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span>
-    <span class="n">units</span><span class="o">=</span><span class="n">dnn_units</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;tanh&quot;</span><span class="p">,</span> <span class="n">dropout_rate</span><span class="o">=</span><span class="n">dropout_rate</span><span class="p">,</span> <span class="n">use_bn</span><span class="o">=</span><span class="kc">True</span>
-<span class="p">)(</span><span class="n">user_feature</span><span class="p">)</span>
-<span class="n">item_tower</span> <span class="o">=</span> <span class="n">DNNs</span><span class="p">(</span>
-    <span class="n">units</span><span class="o">=</span><span class="n">dnn_units</span><span class="p">,</span> <span class="n">activation</span><span class="o">=</span><span class="s2">&quot;tanh&quot;</span><span class="p">,</span> <span class="n">dropout_rate</span><span class="o">=</span><span class="n">dropout_rate</span><span class="p">,</span> <span class="n">use_bn</span><span class="o">=</span><span class="kc">True</span>
-<span class="p">)(</span><span class="n">item_feature</span><span class="p">)</span>
+<span class="c1"># 分别通过用户塔和物品塔</span>
+<span class="n">user_tower</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_dnn</span><span class="p">(</span><span class="n">user_feature</span><span class="p">)</span>  <span class="c1"># B x dnn_units[-1]</span>
+<span class="n">item_tower</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_dnn</span><span class="p">(</span><span class="n">item_feature</span><span class="p">)</span>  <span class="c1"># B x dnn_units[-1]</span>
 </pre></div>
 </div>
 <p>关键的向量归一化和相似度计算：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># L2归一化：确保训练与检索的一致性</span>
-<span class="n">user_embedding</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">l2_normalize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">))(</span>
-    <span class="n">user_tower</span>
-<span class="p">)</span>
-<span class="n">item_embedding</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">nn</span><span class="o">.</span><span class="n">l2_normalize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">))(</span>
-    <span class="n">item_tower</span>
-<span class="p">)</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">_l2_normalize</span><span class="p">(</span><span class="n">x</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">epsilon</span><span class="o">=</span><span class="mf">1e-12</span><span class="p">):</span>
+    <span class="c1"># x / sqrt(max(sum(x^2), epsilon))</span>
+    <span class="n">square_sum</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">x</span> <span class="o">*</span> <span class="n">x</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="n">axis</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+    <span class="k">return</span> <span class="n">x</span> <span class="o">*</span> <span class="n">torch</span><span class="o">.</span><span class="n">rsqrt</span><span class="p">(</span><span class="n">torch</span><span class="o">.</span><span class="n">clamp</span><span class="p">(</span><span class="n">square_sum</span><span class="p">,</span> <span class="nb">min</span><span class="o">=</span><span class="n">epsilon</span><span class="p">))</span>
+
+<span class="c1"># L2归一化：确保训练与检索的一致性</span>
+<span class="n">user_embedding</span> <span class="o">=</span> <span class="n">_l2_normalize</span><span class="p">(</span><span class="n">user_tower</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># B x dnn_units[-1]</span>
+<span class="n">item_embedding</span> <span class="o">=</span> <span class="n">_l2_normalize</span><span class="p">(</span><span class="n">item_tower</span><span class="p">,</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># B x dnn_units[-1]</span>
 
 <span class="c1"># 计算余弦相似度（归一化向量的点积）</span>
-<span class="n">cosine_similarity</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Dot</span><span class="p">(</span><span class="n">axes</span><span class="o">=</span><span class="mi">1</span><span class="p">)([</span><span class="n">user_embedding</span><span class="p">,</span> <span class="n">item_embedding</span><span class="p">])</span>
+<span class="n">cosine_similarity</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span>
+    <span class="n">user_embedding</span> <span class="o">*</span> <span class="n">item_embedding</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span>
+<span class="p">)</span>  <span class="c1"># B x 1</span>
 </pre></div>
 </div>
 <p>这种设计使得用户和物品的表示完全独立，支持离线预计算物品向量并存储在ANN索引中，实现毫秒级的召回响应。</p>

@@ -73,59 +73,58 @@ HMoE核心代码如下，其中包括了是否共享门控和融合打分权重�
 
 .. code:: python
 
-   # 构建dnn的输入
+   # 域特征（[B, 1]，用于按域筛选样本）与 dnn 的输入
+   domain_input = inputs[domain_feature_name].long()
    dnn_inputs = concat_group_embedding(group_embedding_feature_dict, 'dnn')
 
-   # 创建多个专家
-   expert_output_list = [
-       DNNs(shared_expert_dnn_units, name=f"expert_{i}")(dnn_inputs)
-       for i in range(shared_expert_nums)
-   ]
-   expert_concat = tf.keras.layers.Lambda(lambda x: tf.stack(x, axis=1))(expert_output_list)  # (None, expert_num, dims)
+   # 多个专家（self.experts: nn.ModuleList of DNNs）
+   expert_output_list = [expert(dnn_inputs) for expert in self.experts]
+   expert_concat = torch.stack(expert_output_list, dim=1)  # (None, expert_num, dims)
 
    # 每域独立 Gate 融合专家输出
    domain_tower_input_list = []
    for i in range(num_domains):
-       gate_output = DNNs(gate_dnn_units, name=f"gate_{i}")(dnn_inputs)
-       gate_output = tf.keras.layers.Dense(shared_expert_nums, use_bias=False, activation='softmax', name=f"gate_{i}_softmax")(gate_output)
-       gate_output = tf.keras.layers.Lambda(lambda x: tf.expand_dims(x, axis=-1))(gate_output)  # (None, expert_num, 1)
-       gate_expert_output = tf.keras.layers.Lambda(lambda x: x[0] * x[1])([gate_output, expert_concat])
-       gate_expert_output = tf.keras.layers.Lambda(lambda x: tf.reduce_sum(x, axis=1, keepdims=False))(gate_expert_output)
+       gate_output = self.gate_dnns[i](dnn_inputs)
+       # Dense(shared_expert_nums, use_bias=False, activation='softmax')
+       gate_output = self.gate_softmax[i](gate_output)                  # (None, expert_num)
+       gate_output = gate_output.unsqueeze(-1)                           # (None, expert_num, 1)
+       gate_expert_output = gate_output * expert_concat                  # (None, expert_num, dims)
+       gate_expert_output = torch.sum(gate_expert_output, dim=1, keepdim=False)  # (None, dims)
        domain_tower_input_list.append(gate_expert_output)
 
-   # 定义每个域的塔（Tower）
+   # 每个域的塔（Tower）
    domain_tower_output_list = []
    for i in range(num_domains):
        domain_dnn_input = domain_tower_input_list[i]
-       task_output = DNNs(domain_tower_units, name=f"tower_{i}")(domain_dnn_input)
+       task_output = self.domain_towers[i](domain_dnn_input)
        domain_tower_output_list.append(task_output)
 
    # 域间权重（参数化，可选预处理）
    if domain_weight_units is not None:
-       domain_weight_input = DNNs(domain_weight_units, name="domain_weight_dnn")(dnn_inputs)
+       domain_weight_input = self.domain_weight_dnn(dnn_inputs)
    else:
        domain_weight_input = dnn_inputs
-   domain_weight = tf.keras.layers.Dense(num_domains, activation='softmax', name="domain_weight")(domain_weight_input)  # (None, num_domains)
+   # Dense(num_domains, activation='softmax')
+   domain_weight = self.domain_weight(domain_weight_input)  # (None, num_domains)
 
-   # 融合domain信息（own + cross with stop_gradient）
+   # 融合domain信息（own + cross with detach）
    mixed_output_list = []
    for i in range(num_domains):
-       wi = tf.keras.layers.Lambda(lambda w: w[:, i:i+1])(domain_weight)
-       weighted_output = tf.keras.layers.Lambda(lambda x: x[0] * x[1])([domain_tower_output_list[i], wi])
+       wi = domain_weight[:, i:i+1]
+       weighted_output = domain_tower_output_list[i] * wi
        for j in range(num_domains):
            if i == j:
                continue
-           grad_output = tf.keras.layers.Lambda(lambda x: tf.stop_gradient(x))(domain_tower_output_list[j])
-           wj = tf.keras.layers.Lambda(lambda w: w[:, j:j+1])(domain_weight)
-           weighted_output = tf.keras.layers.Add()([
-               weighted_output,
-               tf.keras.layers.Multiply()([wj, grad_output])
-           ])
-       mixed_output_list.append(weighted_output)
+           grad_output = domain_tower_output_list[j].detach()  # 阻断其他域塔的梯度回传
+           wj = domain_weight[:, j:j+1]
+           weighted_output = weighted_output + wj * grad_output
+       # 只保留属于域 i 的样本
+       domain_mask = torch.eq(domain_input, i).squeeze(-1)
+       mixed_output_list.append(weighted_output[domain_mask])
 
    # 将所有domain的数据拼接成batch并输出 logits
-   final_domain_output = tf.keras.layers.Concatenate(axis=0)(mixed_output_list)
-   dnn_logits = PredictLayer(activation=None, name="dnn_logits")(final_domain_output)
+   final_domain_output = torch.cat(mixed_output_list, dim=0)
+   dnn_logits = self.dnn_logits(final_domain_output)  # Dense(1, activation=None)
 
 
 
@@ -226,10 +225,11 @@ STAR Topology Fully-Connected Network的具体实现如下：
 
 .. code:: python
 
-   class StarTopologyFCN(tf.keras.layers.Layer):
+   class StarTopologyFCN(Layer):
        """
        星型拓扑 FCN（简化版）
-       - 核心思想：中心共享参数 + 各域的轻量适配器（增量参数），
+       - 核心思想：中心共享参数 + 各域的独占参数，二者逐元素相乘得到域参数
+       - Layer 为 funrec 的惰性构建基类：首次前向时调用 build 创建参数
        """
        def __init__(self,
                     num_domain,
@@ -238,11 +238,11 @@ STAR Topology Fully-Connected Network的具体实现如下：
                     dropout=0.,
                     l2_reg=0.,
                     **kwargs):
-           super(StarTopologyFCN, self).__init__( **kwargs)
+           super(StarTopologyFCN, self).__init__(name=kwargs.get("name"))
            self.num_domain = num_domain
            self.hidden_units = list(hidden_units)
-           self.activation = tf.keras.activations.get(activation)
-           self.dropout = tf.keras.layers.Dropout(dropout)
+           self.activation = get_activation(activation)
+           self.dropout = nn.Dropout(dropout)
            self.l2_reg = l2_reg
 
        def build(self, input_shape):
@@ -250,6 +250,7 @@ STAR Topology Fully-Connected Network的具体实现如下：
            input_shape = input_shape[0]
            input_dim = input_shape[-1]
            layer_dims = [input_dim] + self.hidden_units
+           device = self._build_device  # 输入所在设备
 
            # 共享参数（星型中心）：每一层的共享权重 / 共享偏置
            self.shared_kernels = [
@@ -257,7 +258,7 @@ STAR Topology Fully-Connected Network的具体实现如下：
                    name=f"shared_kernel_{i}",
                    shape=(layer_dims[i], layer_dims[i+1]),
                    initializer="glorot_uniform",
-                   regularizer=tf.keras.regularizers.l2(self.l2_reg),
+                   regularizer=self.l2_reg,  # L2 正则系数
                    trainable=True,
                ) for i in range(len(self.hidden_units))
            ]
@@ -270,43 +271,44 @@ STAR Topology Fully-Connected Network的具体实现如下：
                ) for i in range(len(self.hidden_units))
            ]
 
-           # 域适配器（辐射边）：用 Embedding 为每个域生成增量参数（kernel / bias）
-           self.domain_kernel_embs = [
-               tf.keras.layers.Embedding(
+           # 域独占参数（辐射边）：用 Embedding 为每个域查出 kernel / bias
+           self.domain_kernel_embs = nn.ModuleList([
+               Embedding(
                    self.num_domain,
                    layer_dims[i] * layer_dims[i+1],
                    embeddings_initializer="glorot_uniform",
-                   embeddings_regularizer=tf.keras.regularizers.l2(self.l2_reg),
+                   l2_reg=self.l2_reg,
                ) for i in range(len(self.hidden_units))
-           ]
-           self.domain_bias_embs = [
-               tf.keras.layers.Embedding(
+           ]).to(device)
+           self.domain_bias_embs = nn.ModuleList([
+               Embedding(
                    self.num_domain,
                    layer_dims[i+1],
                    embeddings_initializer="zeros",
                ) for i in range(len(self.hidden_units))
-           ]
+           ]).to(device)
 
-       def call(self, inputs, training=None):
+       def forward(self, inputs):
            # x: [B, Din]；domain_index: [B]
            x, domain_index = inputs
+           domain_index = domain_index.reshape(-1).long()   # [B, 1] -> [B]
            for i in range(len(self.hidden_units)):
-               # 取出域增量参数并重塑到矩阵形状
-               delta_w = self.domain_kernel_embs[i](domain_index)                      # [B, Din*Dout]
-               delta_w = tf.reshape(delta_w, (-1,) + self.shared_kernels[i].shape.as_list())  # [B, Din, Dout]
-               # 星型融合：共享权重 + 域增量（也可改为乘法，视实验而定）
-               w = self.shared_kernels[i] + delta_w                                    # [B, Din, Dout]
-               delta_b = self.domain_bias_embs[i](domain_index)                        # [B, Dout]
-               b = self.shared_biases[i] + delta_b                                     # [B, Dout]
+               # 取出域参数并重塑到矩阵形状
+               domain_w = self.domain_kernel_embs[i](domain_index)                     # [B, Din*Dout]
+               domain_w = domain_w.reshape([-1] + list(self.shared_kernels[i].shape))  # [B, Din, Dout]
+               # 星型融合：共享权重 ⊗ 域权重，共享偏置 + 域偏置
+               w = self.shared_kernels[i] * domain_w                                   # [B, Din, Dout]
+               domain_b = self.domain_bias_embs[i](domain_index)                       # [B, Dout]
+               b = self.shared_biases[i] + domain_b                                    # [B, Dout]
 
                # 线性层（按样本/域使用其专属参数）
-               x = tf.expand_dims(x, axis=1)                                           # [B, 1, Din]
-               x = tf.matmul(x, w) + tf.expand_dims(b, 1)                              # [B, 1, Dout]
-               x = tf.squeeze(x, axis=1)                                               # [B, Dout]
+               x = x.unsqueeze(1)                                                      # [B, 1, Din]
+               x = torch.matmul(x, w) + b.unsqueeze(1)                                 # [B, 1, Dout]
+               x = x.squeeze(1)                                                        # [B, Dout]
 
-               # 激活 + Dropout（保持轻量）
+               # 激活 + Dropout（训练/推理由 model.train()/model.eval() 控制）
                x = self.activation(x)
-               x = self.dropout(x, training=training)
+               x = self.dropout(x)
            return x
 
 **Partitioned Normalization**
@@ -342,44 +344,56 @@ Partitioned Normalization的具体实现如下：
 
 .. code:: python
 
-   class PartitionedNormalization(tf.keras.layers.Layer):
+   class PartitionedNormalization(Layer):
        """
        领域分区归一化（简化版）
-       - 核心思想：按 domain 将 batch 切分，对每个子批次单独做 BN，
-         再把结果写回原位置，避免跨域统计混淆。
-       - 实现要点：掩码取出 -> 逐域 BN -> scatter 回填。
+       - 核心思想：按 domain 将 batch 切分，每个域单独维护 BN 统计量，
+         再用 (全局 gamma + 域 gamma)、(全局 beta + 域 beta) 缩放平移，写回原位置。
+       - 实现要点：掩码取出 -> 逐域 BN -> index_put 回填。
        """
-       def __init__(self, num_domain, name=None, **kwargs):
+       def __init__(self, num_domain, name=None, momentum=0.99, epsilon=1e-3):
            super(PartitionedNormalization, self).__init__(name=name)
            self.num_domain = num_domain
-           # 每个域一个 BN（带缩放与中心化），更直观体现“分区归一化”
-           self.bn_list = [
-               tf.keras.layers.BatchNormalization(center=True, scale=True, name=f"bn_{i}")
-               for i in range(num_domain)
-           ]
+           self.momentum = momentum
+           self.epsilon = epsilon
 
-       def _grid_indices(self, rows, dim):
-           y = tf.range(dim)
-           x_grid, y_grid = tf.meshgrid(rows, y)
-           return tf.transpose(tf.stack([x_grid, y_grid], axis=-1), [1, 0, 2])
+       def build(self, input_shape):
+           dim = input_shape[0][-1]
+           # 场景共享的缩放/平移参数 + 每个域独占的缩放/平移参数
+           self.global_gamma = self.add_weight("global_gamma", [dim], initializer=lambda t: t.fill_(0.5))
+           self.global_beta = self.add_weight("global_beta", [dim], initializer="zeros")
+           self.domain_gamma = self.add_weight("domain_gamma", [self.num_domain, dim], initializer=lambda t: t.fill_(0.5))
+           self.domain_beta = self.add_weight("domain_beta", [self.num_domain, dim], initializer="zeros")
+           # 每个域独立的滑动均值/方差（buffer，不参与梯度更新）
+           device = self._build_device
+           self.register_buffer("moving_mean", torch.zeros(self.num_domain, dim, device=device))
+           self.register_buffer("moving_variance", torch.ones(self.num_domain, dim, device=device))
 
-       def call(self, inputs, training=None):
+       def _bn(self, x, i):
+           # 训练时用该域样本的批统计量并更新滑动统计量，推理时用滑动统计量
+           if self.training:
+               mean, var = x.mean(dim=0), x.var(dim=0, unbiased=False)
+               with torch.no_grad():
+                   self.moving_mean[i].mul_(self.momentum).add_((1 - self.momentum) * mean)
+                   self.moving_variance[i].mul_(self.momentum).add_((1 - self.momentum) * var)
+           else:
+               mean, var = self.moving_mean[i], self.moving_variance[i]
+           return (x - mean) * torch.rsqrt(var + self.epsilon)
+
+       def forward(self, inputs):
            # x: [B, D]；domain_index: [B]
            x, domain_index = inputs
-           domain_index = tf.cast(tf.reshape(domain_index, [-1]), tf.int32)
-           dim = tf.shape(x)[-1]
+           domain_index = domain_index.reshape(-1).long()
 
            y = x
-           for i, bn in enumerate(self.bn_list):
-               mask = tf.equal(domain_index, i)
-               def update():
-                   xi = tf.boolean_mask(x, mask)                    # 取该域样本
-                   yi = bn(xi, training=training)                   # 用该域统计做 BN
-                   rows = tf.boolean_mask(tf.range(tf.shape(x)[0]), mask)
-                   grid = self._grid_indices(rows, dim)             # 生成 (row, col) 坐标
-                   return tf.reshape(tf.tensor_scatter_nd_update(y, grid, yi), tf.shape(y))
-
-               y = tf.cond(tf.reduce_any(mask), update, lambda: y)
+           for i in range(self.num_domain):
+               mask = domain_index == i
+               if not bool(mask.any()):                         # 当前 batch 没有该域样本则跳过
+                   continue
+               rows = torch.nonzero(mask, as_tuple=True)[0]     # 该域样本所在的行
+               yi = self._bn(x[rows], i)                        # 用该域统计做 BN
+               yi = (self.global_gamma + self.domain_gamma[i]) * yi + (self.global_beta + self.domain_beta[i])
+               y = y.index_put((rows,), yi)                     # 写回原位置
            return y
 
 **辅助网络**
@@ -401,34 +415,39 @@ STAR模型的实现代码如下：
 .. code:: python
 
    # 核心思路：主干 Star FCN + 辅助 DNN，两者按域归一化后融合
-   # 1) 输入层：构建所有特征的输入，并取出域特征（用于分域）
-   input_layer_dict = build_input_layer(feature_columns)
-   domain_input = input_layer_dict[domain_feature_name]
+   # ---- __init__ 中定义各子网络 ----
+   self.fcn_pn_layer = PartitionedNormalization(num_domain=num_domains, name="fcn_pn_layer")
+   self.star_fcn_layer = StarTopologyFCN(num_domains, star_dnn_units, star_fcn_activation,
+                                         dropout, l2_reg, name="star_fcn_layer")
+   self.fcn_logits = PredictLayer(activation=None, name='fcn_logits')
+   self.aux_pn_layer = PartitionedNormalization(num_domain=num_domains, name="aux_pn_layer")
+   self.aux_dnn = DNNs(aux_dnn_units, dropout_rate=dropout)
+   self.aux_logits = PredictLayer(activation=None, name='aux_logits')
+   self.star_output = Dense(1, activation="sigmoid", name="star_output")
+
+   # ---- forward 中的计算 ----
+   # 1) 输入：取出域特征（用于分域）
+   domain_input = inputs[domain_feature_name]
 
    # 2) 获取 dnn 组与 domain 组的表示
    dnn_inputs = concat_group_embedding(group_embedding_feature_dict, 'dnn')          # [B, dnn_dim]
    domain_embeddings = concat_group_embedding(group_embedding_feature_dict, 'domain') # [B, domain_dim]
 
-   # 3) 主干分支（Star FCN）：对 dnn 
-   fcn_inputs = PartitionedNormalization(num_domain=num_domains, name="fcn_pn_layer")(
-       [dnn_inputs, domain_input]
-   )
-   fcn_output = StarTopologyFCN(num_domains, star_dnn_units, star_fcn_activation,
-                                   dropout, l2_reg, name="star_fcn_layer")([fcn_inputs, domain_input])
-   fcn_logit = PredictLayer(activation=None, name='fcn_logits')(fcn_output)
+   # 3) 主干分支（Star FCN）：对 dnn 输入做分域归一化后送入星型 FCN
+   fcn_inputs = self.fcn_pn_layer([dnn_inputs, domain_input])
+   fcn_output = self.star_fcn_layer([fcn_inputs, domain_input])
+   fcn_logit = self.fcn_logits(fcn_output)
 
    # 4) 辅助分支（Aux DNN）：将域嵌入与 dnn 输入拼接，进行轻量 DNN
    aux_inputs = concat_func([domain_embeddings, dnn_inputs], axis=-1)                 # [B, domain_dim + dnn_dim]
-   aux_inputs = PartitionedNormalization(num_domain=num_domains, name="aux_pn_layer")(
-       [aux_inputs, domain_input]
-   )
-   aux_output = DNNs(aux_dnn_units, dropout_rate=dropout)(aux_inputs)
-   aux_logit = PredictLayer(activation=None, name='aux_logits')(aux_output)
+   aux_inputs = self.aux_pn_layer([aux_inputs, domain_input])
+   aux_output = self.aux_dnn(aux_inputs)
+   aux_logit = self.aux_logits(aux_output)
 
    # 5) 融合：主干与辅助分支的 logit 相加，得到最终的表征
    final_logits = add_tensor_func([fcn_logit, aux_logit])
 
-   final_prediction = PredictLayer(activation=None, name='final_prediction')(final_logits)
+   final_prediction = self.star_output(final_logits)
 
 
 

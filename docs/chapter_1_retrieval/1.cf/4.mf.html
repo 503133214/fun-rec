@@ -432,31 +432,33 @@ Show Source
 <section id="id4">
 <h2><span class="section-number">2.1.4.3. </span>FunkSVD代码实践<a class="headerlink" href="#id4" title="Permalink to this heading">¶</a></h2>
 <p>FunkSVD的核心在于学习用户和物品的隐向量表示。在实现中，我们使用Embedding层来表示这些隐向量，并通过内积计算预测评分：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 用户的隐向量表示</span>
-<span class="n">user_factors</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># __init__ 中定义：用户的隐向量表示</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">user_factors</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
     <span class="n">user_vocab_size</span><span class="p">,</span>
     <span class="n">embedding_dim</span><span class="p">,</span>
     <span class="n">embeddings_initializer</span><span class="o">=</span><span class="s2">&quot;normal&quot;</span><span class="p">,</span>
-    <span class="n">embeddings_regularizer</span><span class="o">=</span><span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">regularizers</span><span class="o">.</span><span class="n">l2</span><span class="p">(</span><span class="mf">0.02</span><span class="p">),</span>
+    <span class="n">l2_reg</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span>
     <span class="n">name</span><span class="o">=</span><span class="s2">&quot;user_factors&quot;</span><span class="p">,</span>
-<span class="p">)(</span><span class="n">user_id_input</span><span class="p">)</span>
-<span class="n">user_factors</span> <span class="o">=</span> <span class="n">Flatten</span><span class="p">()(</span><span class="n">user_factors</span><span class="p">)</span>
+<span class="p">)</span>
 
 <span class="c1"># 物品的隐向量表示</span>
-<span class="n">item_factors</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">item_factors</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
     <span class="n">item_vocab_size</span><span class="p">,</span>
     <span class="n">embedding_dim</span><span class="p">,</span>
     <span class="n">embeddings_initializer</span><span class="o">=</span><span class="s2">&quot;normal&quot;</span><span class="p">,</span>
-    <span class="n">embeddings_regularizer</span><span class="o">=</span><span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">regularizers</span><span class="o">.</span><span class="n">l2</span><span class="p">(</span><span class="mf">0.02</span><span class="p">),</span>
+    <span class="n">l2_reg</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span>
     <span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_factors&quot;</span><span class="p">,</span>
-<span class="p">)(</span><span class="n">item_id_input</span><span class="p">)</span>
-<span class="n">item_factors</span> <span class="o">=</span> <span class="n">Flatten</span><span class="p">()(</span><span class="n">item_factors</span><span class="p">)</span>
+<span class="p">)</span>
 
-<span class="c1"># 预测：计算用户向量和物品向量的内积</span>
-<span class="n">prediction</span> <span class="o">=</span> <span class="n">Dot</span><span class="p">(</span><span class="n">axes</span><span class="o">=</span><span class="mi">1</span><span class="p">)([</span><span class="n">user_factors</span><span class="p">,</span> <span class="n">item_factors</span><span class="p">])</span>
+<span class="c1"># forward 中：查表并展平，B x 1 x K -&gt; B x K</span>
+<span class="n">user_factors</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_factors</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">user_id</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">item_factors</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_factors</span><span class="p">(</span><span class="n">item_id</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">item_id</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>
+
+<span class="c1"># 预测：计算用户向量和物品向量的内积，B x 1</span>
+<span class="n">prediction</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">user_factors</span> <span class="o">*</span> <span class="n">item_factors</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
 </pre></div>
 </div>
-<p>这里的<code class="docutils literal notranslate"><span class="pre">embedding_dim</span></code>对应公式中的隐含因子数量<span class="math notranslate nohighlight">\(K\)</span>。<code class="docutils literal notranslate"><span class="pre">user_factors</span></code>对应<span class="math notranslate nohighlight">\(p_u\)</span>，<code class="docutils literal notranslate"><span class="pre">item_factors</span></code>对应<span class="math notranslate nohighlight">\(q_i\)</span>，而<code class="docutils literal notranslate"><span class="pre">Dot</span></code>操作计算的就是<span class="math notranslate nohighlight">\(p_u^T q_i\)</span>。通过训练，模型会自动学习最优的隐向量表示，使预测评分尽可能接近真实评分。</p>
+<p>这里的<code class="docutils literal notranslate"><span class="pre">embedding_dim</span></code>对应公式中的隐含因子数量<span class="math notranslate nohighlight">\(K\)</span>。<code class="docutils literal notranslate"><span class="pre">user_factors</span></code>对应<span class="math notranslate nohighlight">\(p_u\)</span>，<code class="docutils literal notranslate"><span class="pre">item_factors</span></code>对应<span class="math notranslate nohighlight">\(q_i\)</span>，而逐元素相乘再求和的<code class="docutils literal notranslate"><span class="pre">torch.sum(user_factors</span> <span class="pre">*</span> <span class="pre">item_factors,</span> <span class="pre">dim=1)</span></code>计算的就是<span class="math notranslate nohighlight">\(p_u^T q_i\)</span>。通过训练，模型会自动学习最优的隐向量表示，使预测评分尽可能接近真实评分。</p>
 <p>FunkSVD 在 MovieLens 数据集上的应用</p>
 <div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">funrec</span><span class="w"> </span><span class="kn">import</span> <span class="n">run_experiment</span>
 
@@ -493,48 +495,51 @@ Show Source
 <section id="id6">
 <h2><span class="section-number">2.1.4.5. </span>BiasSVD代码实践<a class="headerlink" href="#id6" title="Permalink to this heading">¶</a></h2>
 <p>BiasSVD在FunkSVD的基础上增加了偏置项。在实现中，我们为用户和物品分别添加偏置Embedding，并在预测时将所有项相加：</p>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># 用户的隐向量表示 + 用户偏置</span>
-<span class="n">user_factors</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="c1"># __init__ 中定义：用户的隐向量表示 + 用户偏置</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">user_factors</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
     <span class="n">user_vocab_size</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">,</span>
     <span class="n">embeddings_initializer</span><span class="o">=</span><span class="s2">&quot;normal&quot;</span><span class="p">,</span>
-    <span class="n">embeddings_regularizer</span><span class="o">=</span><span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">regularizers</span><span class="o">.</span><span class="n">l2</span><span class="p">(</span><span class="mf">0.02</span><span class="p">),</span>
+    <span class="n">l2_reg</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span>
     <span class="n">name</span><span class="o">=</span><span class="s2">&quot;user_factors&quot;</span><span class="p">,</span>
-<span class="p">)(</span><span class="n">user_id_input</span><span class="p">)</span>
-<span class="n">user_factors</span> <span class="o">=</span> <span class="n">Flatten</span><span class="p">()(</span><span class="n">user_factors</span><span class="p">)</span>
-
-<span class="n">user_bias</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
+<span class="p">)</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">user_bias</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
     <span class="n">user_vocab_size</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span>
     <span class="n">embeddings_initializer</span><span class="o">=</span><span class="s2">&quot;zeros&quot;</span><span class="p">,</span>
-    <span class="n">embeddings_regularizer</span><span class="o">=</span><span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">regularizers</span><span class="o">.</span><span class="n">l2</span><span class="p">(</span><span class="mf">0.02</span><span class="p">),</span>
+    <span class="n">l2_reg</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span>
     <span class="n">name</span><span class="o">=</span><span class="s2">&quot;user_bias&quot;</span><span class="p">,</span>
-<span class="p">)(</span><span class="n">user_id_input</span><span class="p">)</span>
-<span class="n">user_bias</span> <span class="o">=</span> <span class="n">Flatten</span><span class="p">()(</span><span class="n">user_bias</span><span class="p">)</span>
+<span class="p">)</span>
 
 <span class="c1"># 物品的隐向量表示 + 物品偏置</span>
-<span class="n">item_factors</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">item_factors</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
     <span class="n">item_vocab_size</span><span class="p">,</span> <span class="n">embedding_dim</span><span class="p">,</span>
     <span class="n">embeddings_initializer</span><span class="o">=</span><span class="s2">&quot;normal&quot;</span><span class="p">,</span>
-    <span class="n">embeddings_regularizer</span><span class="o">=</span><span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">regularizers</span><span class="o">.</span><span class="n">l2</span><span class="p">(</span><span class="mf">0.02</span><span class="p">),</span>
+    <span class="n">l2_reg</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span>
     <span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_factors&quot;</span><span class="p">,</span>
-<span class="p">)(</span><span class="n">item_id_input</span><span class="p">)</span>
-<span class="n">item_factors</span> <span class="o">=</span> <span class="n">Flatten</span><span class="p">()(</span><span class="n">item_factors</span><span class="p">)</span>
-
-<span class="n">item_bias</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
+<span class="p">)</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">item_bias</span> <span class="o">=</span> <span class="n">Embedding</span><span class="p">(</span>
     <span class="n">item_vocab_size</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span>
     <span class="n">embeddings_initializer</span><span class="o">=</span><span class="s2">&quot;zeros&quot;</span><span class="p">,</span>
-    <span class="n">embeddings_regularizer</span><span class="o">=</span><span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">regularizers</span><span class="o">.</span><span class="n">l2</span><span class="p">(</span><span class="mf">0.02</span><span class="p">),</span>
+    <span class="n">l2_reg</span><span class="o">=</span><span class="mf">0.02</span><span class="p">,</span>
     <span class="n">name</span><span class="o">=</span><span class="s2">&quot;item_bias&quot;</span><span class="p">,</span>
-<span class="p">)(</span><span class="n">item_id_input</span><span class="p">)</span>
-<span class="n">item_bias</span> <span class="o">=</span> <span class="n">Flatten</span><span class="p">()(</span><span class="n">item_bias</span><span class="p">)</span>
+<span class="p">)</span>
+
+<span class="c1"># 全局偏置：以常数 1 为输入的 Dense 层</span>
+<span class="bp">self</span><span class="o">.</span><span class="n">global_bias</span> <span class="o">=</span> <span class="n">Dense</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">use_bias</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">kernel_initializer</span><span class="o">=</span><span class="s2">&quot;zeros&quot;</span><span class="p">,</span>
+                         <span class="n">name</span><span class="o">=</span><span class="s2">&quot;global_bias&quot;</span><span class="p">)</span>
+
+<span class="c1"># forward 中：查表并展平</span>
+<span class="n">user_factors</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_factors</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">user_id</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># B x K</span>
+<span class="n">user_bias</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">user_bias</span><span class="p">(</span><span class="n">user_id</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">user_id</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>        <span class="c1"># B x 1</span>
+<span class="n">item_factors</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_factors</span><span class="p">(</span><span class="n">item_id</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">item_id</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># B x K</span>
+<span class="n">item_bias</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">item_bias</span><span class="p">(</span><span class="n">item_id</span><span class="p">)</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="n">item_id</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="o">-</span><span class="mi">1</span><span class="p">)</span>        <span class="c1"># B x 1</span>
 
 <span class="c1"># 计算各个部分</span>
-<span class="n">interaction</span> <span class="o">=</span> <span class="n">Dot</span><span class="p">(</span><span class="n">axes</span><span class="o">=</span><span class="mi">1</span><span class="p">)([</span><span class="n">user_factors</span><span class="p">,</span> <span class="n">item_factors</span><span class="p">])</span>  <span class="c1"># 交互项</span>
-<span class="n">ones_input</span> <span class="o">=</span> <span class="n">tf</span><span class="o">.</span><span class="n">keras</span><span class="o">.</span><span class="n">layers</span><span class="o">.</span><span class="n">Lambda</span><span class="p">(</span><span class="k">lambda</span> <span class="n">x</span><span class="p">:</span> <span class="n">tf</span><span class="o">.</span><span class="n">ones_like</span><span class="p">(</span><span class="n">x</span><span class="p">))(</span><span class="n">interaction</span><span class="p">)</span>
-<span class="n">global_bias</span> <span class="o">=</span> <span class="n">Dense</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">use_bias</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">kernel_initializer</span><span class="o">=</span><span class="s2">&quot;zeros&quot;</span><span class="p">,</span>
-                     <span class="n">name</span><span class="o">=</span><span class="s2">&quot;global_bias&quot;</span><span class="p">)(</span><span class="n">ones_input</span><span class="p">)</span>  <span class="c1"># 全局偏置</span>
+<span class="n">interaction</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">sum</span><span class="p">(</span><span class="n">user_factors</span> <span class="o">*</span> <span class="n">item_factors</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">keepdim</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>  <span class="c1"># 交互项</span>
+<span class="n">ones_input</span> <span class="o">=</span> <span class="n">torch</span><span class="o">.</span><span class="n">ones_like</span><span class="p">(</span><span class="n">interaction</span><span class="p">)</span>
+<span class="n">global_bias</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">global_bias</span><span class="p">(</span><span class="n">ones_input</span><span class="p">)</span>  <span class="c1"># 全局偏置</span>
 
 <span class="c1"># BiasSVD 预测：global_bias + user_bias + item_bias + interaction</span>
-<span class="n">prediction</span> <span class="o">=</span> <span class="n">Add</span><span class="p">()([</span><span class="n">global_bias</span><span class="p">,</span> <span class="n">user_bias</span><span class="p">,</span> <span class="n">item_bias</span><span class="p">,</span> <span class="n">interaction</span><span class="p">])</span>
+<span class="n">prediction</span> <span class="o">=</span> <span class="n">global_bias</span> <span class="o">+</span> <span class="n">user_bias</span> <span class="o">+</span> <span class="n">item_bias</span> <span class="o">+</span> <span class="n">interaction</span>
 </pre></div>
 </div>
 <p>偏置项初始化为<code class="docutils literal notranslate"><span class="pre">&quot;zeros&quot;</span></code>，代表相对于平均水平的偏移，训练过程中自动学习不同用户的打分习惯和不同物品的受欢迎程度。</p>

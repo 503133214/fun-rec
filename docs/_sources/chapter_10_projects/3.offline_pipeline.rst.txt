@@ -518,11 +518,17 @@ MovieLens
        metrics = evaluate_model(models, processed_data, cfg.evaluation, feature_columns)
        print(build_metrics_table(metrics))
        
-       # 保存用户塔和物品塔
+       # 保存用户塔和物品塔：子模型与主模型共享参数，
+       # save_model 保存主模型参数 + 重建信息，并用 tower 记录加载时返回哪个塔
        user_model = models[1]
        item_model = models[2]
-       user_model.save(config.SAVED_MODELS_DIR / "user_model")
-       item_model.save(config.SAVED_MODELS_DIR / "item_model")
+       save_kwargs = dict(
+           build_function=model_config_dict["training"]["build_function"],
+           feature_columns=feature_columns,
+           model_config=model_config_dict["training"]["model_params"],
+       )
+       save_model(user_model, str(config.USER_MODEL_PATH), tower="user_model", **save_kwargs)
+       save_model(item_model, str(config.ITEM_MODEL_PATH), tower="item_model", **save_kwargs)
 
 YoutubeDNN
 训练完成后会返回三个模型：完整模型、用户塔模型、物品塔模型。在线服务时，我们只需要用户塔模型（实时计算用户向量）和预计算的物品向量（通过物品塔生成）。
@@ -671,8 +677,15 @@ FM 的二阶交叉计算，\ ``linear``
        metrics = evaluate_model(models, processed_data, cfg.evaluation, feature_columns)
        print(build_metrics_table(metrics))
        
-       # 保存模型
-       main_model.save(config.RANKING_MODEL_PATH)
+       # 保存模型（参数 + 重建信息，在线服务通过 load_model 重建并加载）
+       save_model(
+           main_model,
+           str(config.RANKING_MODEL_PATH),
+           build_function=model_config_dict["training"]["build_function"],
+           feature_columns=feature_columns,
+           model_config=model_config_dict["training"]["model_params"],
+           tower=None,
+       )
        
        # 保存模型配置（供在线推理使用）
        pickle.dump({
@@ -829,19 +842,20 @@ Redis 特征写入
        shutil.copy2(config.ITEM_EMB_PATH, recall_dir / "item_embeddings.npy")
        shutil.copy2(config.ITEM_EMB_PATH, deploy_dir / "item_embeddings.npy")
        
-       # 3. 用户塔模型（复制整个目录）
-       user_model_path = config.SAVED_MODELS_DIR / "user_model"
+       # 3. 用户塔模型（PyTorch .pt 单文件）
+       user_model_path = config.USER_MODEL_PATH
        model_deploy_dir = deploy_dir / "model" / "user_recall" / "v1"
        model_deploy_dir.mkdir(parents=True, exist_ok=True)
-       shutil.copytree(user_model_path, model_deploy_dir / "user_model")
+       shutil.copy2(user_model_path, model_deploy_dir / "user_model.pt")
        
        # 更新版本指针
-       version_info = {"version": "v1", "path": "model/user_recall/v1/user_model"}
+       version_info = {"version": "v1", "path": "model/user_recall/v1/user_model.pt"}
        with open(deploy_dir / "model" / "user_recall" / "active.json", "w") as f:
            json.dump(version_info, f)
 
-TensorFlow SavedModel
-是一个目录，包含模型结构和权重。我们将整个目录复制到部署目录，保持目录结构完整。
+PyTorch 模型由 ``save_model`` 保存为单个 ``.pt``
+文件，其中包含模型参数和重建模型所需的信息（构建函数、特征列、模型参数）。部署时只需将该文件复制到部署目录，在线服务再通过
+``load_model`` 重建模型并加载参数。
 
 版本管理是生产环境中的重要功能。通过 ``active.json``
 指针文件，在线服务可以知道当前应该加载哪个版本的模型。模型更新时，先部署新版本的模型文件，再更新指针，可以实现无感知的模型热更新。
@@ -865,12 +879,12 @@ TensorFlow SavedModel
        # 2. DeepFM 模型
        model_deploy_dir = deploy_dir / "model" / "ranking" / "v1"
        model_deploy_dir.mkdir(parents=True, exist_ok=True)
-       shutil.copytree(config.RANKING_MODEL_PATH, model_deploy_dir / "ranking_model")
+       shutil.copy2(config.RANKING_MODEL_PATH, model_deploy_dir / "ranking_model.pt")
        
        # 更新版本指针
        version_info = {
            "version": "v1", 
-           "path": "model/ranking/v1/ranking_model",
+           "path": "model/ranking/v1/ranking_model.pt",
            "model_type": "deepfm"
        }
        with open(deploy_dir / "model" / "ranking" / "active.json", "w") as f:

@@ -58,7 +58,11 @@ YouTubeDNN的用户塔设计体现了“非对称”的思想，它整合了多�
 
 .. code:: python
 
-   # 整合用户特征和历史行为序列
+   # __init__ 中定义用户塔：DNN + L2 归一化
+   self.user_dnn = DNNs(units=dnn_units + [emb_dim], activation="relu", use_bn=False)
+   self.user_l2_norm = L2NormalizeLayer(axis=-1)
+
+   # 前向计算：整合用户特征和历史行为序列
    user_feature_embedding = concat_group_embedding(
        group_embedding_feature_dict, "user_dnn"
    )  # B x (D * N)
@@ -67,17 +71,15 @@ YouTubeDNN的用户塔设计体现了“非对称”的思想，它整合了多�
        hist_seq_embedding = concat_group_embedding(
            group_embedding_feature_dict, "raw_hist_seq"
        )  # B x D
-       user_dnn_inputs = tf.concat(
-           [user_feature_embedding, hist_seq_embedding], axis=1
+       user_dnn_inputs = torch.cat(
+           [user_feature_embedding, hist_seq_embedding], dim=1
        )  # B x (D * N + D)
    else:
        user_dnn_inputs = user_feature_embedding
 
-   # 构建用户塔：输出归一化的用户向量
-   user_dnn_output = DNNs(
-       units=dnn_units + [emb_dim], activation="relu", use_bn=False
-   )(user_dnn_inputs)
-   user_dnn_output = L2NormalizeLayer(axis=-1)(user_dnn_output)
+   # 用户塔：输出归一化的用户向量
+   user_dnn_output = self.user_dnn(user_dnn_inputs)  # B x emb_dim
+   user_dnn_output = self.user_l2_norm(user_dnn_output)
 
 物品塔则采用简化设计，直接使用物品Embedding表：
 
@@ -87,14 +89,14 @@ YouTubeDNN的用户塔设计体现了“非对称”的思想，它整合了多�
 
 .. code:: python
 
-   # 物品Embedding表（从特征列配置中获取）
-   item_embedding_table = embedding_table_dict[label_name]
+   # 物品Embedding表（与用户塔共享的特征Embedding表）
+   item_embedding_table = self.embedding.embedding_table_dict[label_name]
 
-   # 为评估构建物品模型
-   output_item_embedding = SqueezeLayer(axis=1)(
-       item_embedding_table(input_layer_dict[label_name])
+   # 物品塔（评估用）：B x 1 -> B x 1 x D -> B x D，再做 L2 归一化
+   output_item_embedding = self.item_squeeze(
+       item_embedding_table(inputs[label_name])
    )
-   output_item_embedding = L2NormalizeLayer(axis=-1)(output_item_embedding)
+   output_item_embedding = self.item_l2_norm(output_item_embedding)
 
 训练时采用Sampled
 Softmax优化，将百万级的多分类问题转化为高效的采样学习：
@@ -105,12 +107,14 @@ Softmax优化，将百万级的多分类问题转化为高效的采样学习：
 
 .. code:: python
 
-   # 构建采样softmax层
-   sampled_softmax_layer = SampledSoftmaxLayer(item_vocab_size, neg_sample, emb_dim)
-   output = sampled_softmax_layer([
+   # 构建采样softmax层（__init__ 中定义）
+   self.sampled_softmax_layer = SampledSoftmaxLayer(item_vocab_size, neg_sample, emb_dim)
+
+   # 前向计算：输出每个样本的采样softmax损失 B x 1
+   output = self.sampled_softmax_layer([
        item_embedding_table.embeddings, 
        user_dnn_output, 
-       input_layer_dict[label_name]
+       inputs[label_name]
    ])
 
 这种设计的核心优势在于：用户塔可以根据业务需求灵活扩展特征和模型复杂度，而物品塔保持简洁高效，易于离线预计算和实时检索。

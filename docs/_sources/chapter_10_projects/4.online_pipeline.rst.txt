@@ -744,7 +744,7 @@ movie_id、genres、isAdult、startYear 等，每个候选各不相同。
        ranked_results.sort(key=lambda x: x["score"], reverse=True)
        return ranked_results
 
-批量预测相比逐个预测有显著的性能优势。TensorFlow
+批量预测相比逐个预测有显著的性能优势。PyTorch
 在批量推理时可以更好地利用 CPU 的向量化指令或 GPU 的并行计算能力。对于
 100 个候选的批量预测，耗时通常在 10-30 毫秒。
 
@@ -1105,6 +1105,8 @@ HTTP 接口。
 
 .. code:: python
 
+   from funrec.models.base import load_model
+   
    class RecallResourceManager:
        _instance = None
        
@@ -1136,11 +1138,11 @@ HTTP 接口。
        def _load_from_local(self):
            deploy_dir = Path(os.getenv("MODEL_DEPLOY_DIR"))
            
-           # 加载用户模型
+           # 加载用户模型（PyTorch .pt 文件，load_model 重建模型并返回用户塔子模型）
            with open(deploy_dir / "model" / "user_recall" / "active.json") as f:
                version_info = json.load(f)
            model_path = deploy_dir / version_info["path"]
-           self.user_model = tf.keras.models.load_model(model_path)
+           self.user_model = load_model(str(model_path), map_location="cpu")
            
            # 加载物品向量
            self.item_embedding_matrix = np.load(deploy_dir / "item_embeddings.npy")
