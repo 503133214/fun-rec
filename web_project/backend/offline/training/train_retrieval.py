@@ -9,7 +9,6 @@ YoutubeDNN 是一种双塔模型，分别学习用户和物品的嵌入表示，
     uv run python -m offline.training.train_retrieval
 """
 
-import tensorflow as tf
 import pickle
 import numpy as np
 import sys
@@ -24,6 +23,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent.parent.parent 
 from funrec.config import Config as FunRecConfig
 from funrec.features.processors import prepare_features
 from funrec.training.trainer import train_model
+from funrec.models.base import save_model
 from funrec.evaluation import evaluate_model
 from funrec.utils import build_metrics_table
 
@@ -123,7 +123,7 @@ def run_retrieval_training():
         evaluation=model_config_dict["evaluation"]
     )
     
-    # 准备特征（将 numpy 字典转换为 TF 数据集或输入）
+    # 准备特征（将 numpy 字典转换为模型输入）
     # 注意：funrec 中的 prepare_features 实现可能依赖特定的 dataset_config 结构
     # 如果需要，我们传递一个虚拟的 dataset_config，或依赖默认值。
     # 查看 notebook：传递的 dataset_config 包含路径。
@@ -143,8 +143,19 @@ def run_retrieval_training():
     user_model = models[1]  # 通常是 [full_model, user_model, item_model]
     item_model = models[2]
     
-    user_model.save(config.SAVED_MODELS_DIR / "user_model")
-    item_model.save(config.SAVED_MODELS_DIR / "item_model")
+    # 子模型与主模型共享参数：保存主模型参数 + 重建信息，并记录要返回的塔
+    sample_features = {
+        name: np.asarray(values)[:2]
+        for name, values in processed_data["train"]["features"].items()
+    }
+    save_kwargs = dict(
+        build_function=model_config_dict["training"]["build_function"],
+        feature_columns=feature_columns,
+        model_config=model_config_dict["training"]["model_params"],
+        sample_features=sample_features,
+    )
+    save_model(user_model, str(config.USER_MODEL_PATH), tower="user_model", **save_kwargs)
+    save_model(item_model, str(config.ITEM_MODEL_PATH), tower="item_model", **save_kwargs)
     
     # 生成物品嵌入向量
     print("生成物品嵌入向量...")
@@ -155,7 +166,7 @@ def run_retrieval_training():
     encoded_ids = np.arange(1, len(all_movie_ids) + 1)
     item_inputs = {"movie_id": encoded_ids}
     
-    embeddings = item_model.predict(item_inputs, verbose=0)
+    embeddings = item_model.predict(item_inputs, verbose=0)  # numpy 数组 [N, emb_dim]
     # 归一化
     embeddings = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True)
     

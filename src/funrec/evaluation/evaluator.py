@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 import numpy as np
 import pandas as pd
-import tensorflow as tf
+import torch
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import roc_auc_score
 from sklearn.preprocessing import normalize
@@ -28,7 +28,7 @@ from .metrics import (
 
 
 def evaluate_model(
-    models: Union[Tuple[tf.keras.Model, tf.keras.Model, tf.keras.Model], Any],
+    models: Union[Tuple[torch.nn.Module, torch.nn.Module, torch.nn.Module], Any],
     processed_data: Dict[str, Any],
     evaluation_config: Dict[str, Any],
     feature_columns: List[FeatureColumn],
@@ -193,9 +193,7 @@ def evaluate_model(
             }
 
             # 计算物品嵌入
-            item_embedding_model = tf.keras.Model(
-                inputs=main_model.item_input, outputs=main_model.item_embedding
-            )
+            item_embedding_model = main_model.item_tower
             item_embs = item_embedding_model.predict(
                 all_item_model_input, batch_size=4096, verbose=0
             )
@@ -230,7 +228,7 @@ def evaluate_model(
         k_list = evaluation_config.get("k_list", [5, 10])
 
         # SASRec序列模型
-        if hasattr(main_model, "user_input") and hasattr(main_model, "all_item_input"):
+        if hasattr(main_model, "user_tower") and hasattr(main_model, "all_item_tower"):
 
             logger.debug("序列模型评估...")
 
@@ -243,15 +241,13 @@ def evaluate_model(
 
             # 根据用户模型输入提取用户嵌入所需特征
             # 从用户模型获取预期输入名称
-            user_input_names = [layer.name for layer in main_model.user_input]
+            user_input_names = list(main_model.user_tower.input_names)
             user_input_features = {
                 k: v for k, v in test_features.items() if k in user_input_names
             }
 
             # 获取用户embedding
-            user_embedding_model = tf.keras.Model(
-                inputs=main_model.user_input, outputs=main_model.user_embedding
-            )
+            user_embedding_model = main_model.user_tower
             user_embs = user_embedding_model.predict(
                 user_input_features, batch_size=64, verbose=0
             )
@@ -263,10 +259,7 @@ def evaluate_model(
                 logger.debug("使用所有物品评估...")
                 # 创建所有物品输入
                 all_item_model_input = np.array(list(range(feature_dict["item_id"])))
-                item_embedding_model = tf.keras.Model(
-                    inputs=main_model.all_item_input,
-                    outputs=main_model.all_item_embedding,
-                )
+                item_embedding_model = main_model.all_item_tower
                 item_embs = item_embedding_model.predict(
                     all_item_model_input, batch_size=64, verbose=0
                 )
@@ -287,10 +280,7 @@ def evaluate_model(
                 sampling_item_input = {
                     k: v for k, v in test_features.items() if k in ["neg_sample_ids"]
                 }
-                item_embedding_model = tf.keras.Model(
-                    inputs=main_model.sampling_item_input,
-                    outputs=main_model.sampling_item_embedding,
-                )
+                item_embedding_model = main_model.sampling_item_tower
                 sampling_item_embs = item_embedding_model.predict(
                     sampling_item_input, batch_size=64, verbose=0
                 )
@@ -681,7 +671,7 @@ def evaluate_mind_model(user_embs, item_embs, test_model_input, k_list=[5, 10]):
 
 
 def evaluate_ranking_model(
-    models: Tuple[tf.keras.Model, None, None],
+    models: Tuple[torch.nn.Module, None, None],
     processed_data: Dict[str, Any],
     evaluation_config: Dict[str, Any],
     feature_columns: List[FeatureColumn],
@@ -804,7 +794,7 @@ def evaluate_ranking_model(
 
 
 def evaluate_rerank_model(
-    models: Tuple[tf.keras.Model, None, None],
+    models: Tuple[torch.nn.Module, None, None],
     processed_data: Dict[str, Any],
     evaluation_config: Dict[str, Any],
 ) -> Dict[str, float]:

@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 import numpy as np
-import tensorflow as tf
 
 # 将 src 添加到路径以导入 funrec
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent.parent.parent / "src"))
@@ -22,6 +21,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent.parent.parent.parent 
 from funrec.config import Config as FunRecConfig
 from funrec.features.processors import prepare_features
 from funrec.training.trainer import train_model
+from funrec.models.base import save_model
 from funrec.evaluation import evaluate_model
 from funrec.utils import build_metrics_table
 
@@ -156,7 +156,21 @@ def run_ranking_training():
     # 保存模型
     print("\n保存模型...")
     model_save_path = config.RANKING_MODEL_PATH
-    main_model.save(model_save_path)
+    # 保存参数 + 重建模型所需的信息（构建函数、特征列、模型参数），
+    # 在线服务通过 funrec.models.base.load_model 重建并加载
+    sample_features = {
+        name: np.asarray(values)[:2]
+        for name, values in processed_data["train"]["features"].items()
+    }
+    save_model(
+        main_model,
+        str(model_save_path),
+        build_function=model_config_dict["training"]["build_function"],
+        feature_columns=feature_columns,
+        model_config=model_config_dict["training"]["model_params"],
+        tower=None,
+        sample_features=sample_features,
+    )
     print(f"  模型保存到: {model_save_path}")
     
     # 保存模型配置用于推理

@@ -40,7 +40,7 @@ docker compose up --build
 cd backend
 ```
 
-* 同步依赖（需要 Python 3.11，因为 TensorFlow 2.15 仅支持该版本）
+* 同步依赖（需要 Python 3.11；模型基于 PyTorch，仅需 CPU 版本即可运行在线服务）
 ```bash
 uv sync --python 3.11
 ```

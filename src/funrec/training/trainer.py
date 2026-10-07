@@ -3,19 +3,23 @@
 """
 
 import importlib
-from typing import Dict, Any, List, Tuple, Union
-import tensorflow as tf
-import platform
+from typing import Dict, Any, List, Tuple, Union, Callable, Optional
+
+import numpy as np
+import torch
+from tqdm import tqdm
 
 from ..features.feature_column import FeatureColumn
 from ..features.processors import apply_training_preprocessing
+from ..models.base import get_device, num_samples, slice_features, to_tensor
+from .loss import get_loss
 
 
 def train_model(
     training_config: Dict[str, Any],
     feature_columns: List[FeatureColumn],
     processed_data: Dict[str, Any],
-) -> Union[Tuple[tf.keras.Model, tf.keras.Model, tf.keras.Model], Any]:
+) -> Union[Tuple[torch.nn.Module, torch.nn.Module, torch.nn.Module], Any]:
     """
     基于配置和处理后的数据训练模型。
     参数:
@@ -143,46 +147,13 @@ def train_model(
         return model, None, None
 
     else:
-        # 神经网络模型：原始训练流水线
+        # 神经网络模型：PyTorch 训练流水线（语义与原 Keras compile/fit 对齐）
         model, user_model, item_model = build_function(feature_columns, model_params)
 
-        # 编译模型
         optimizer_name = training_config.get("optimizer", "adam")
         optimizer_params = training_config.get("optimizer_params", {})
         loss = training_config.get("loss", ["binary_crossentropy"])
         loss_weights = training_config.get("loss_weights", None)
-        metrics = training_config.get("metrics", ["binary_accuracy"])
-
-        # 处理自定义损失函数
-        if isinstance(loss, str) and loss == "sampledsoftmaxloss":
-            from .loss import sampledsoftmaxloss
-
-            loss = sampledsoftmaxloss
-
-        # 处理优化器 - 对Apple Silicon使用legacy Adam
-        is_apple_silicon = platform.machine().lower() in ["arm64", "aarch64"]
-
-        if optimizer_name == "adam":
-            if is_apple_silicon:
-                optimizer = (
-                    tf.keras.optimizers.legacy.Adam(**optimizer_params)
-                    if optimizer_params
-                    else tf.keras.optimizers.legacy.Adam()
-                )
-            else:
-                optimizer = (
-                    tf.keras.optimizers.Adam(**optimizer_params)
-                    if optimizer_params
-                    else tf.keras.optimizers.Adam()
-                )
-        else:
-            optimizer = optimizer_name
-
-        # 编译时包含loss_weights如果提供的话
-        compile_kwargs = {"optimizer": optimizer, "loss": loss, "metrics": metrics}
-        if loss_weights is not None:
-            compile_kwargs["loss_weights"] = loss_weights
-        model.compile(**compile_kwargs)
 
         # 获取训练参数
         batch_size = training_config.get("batch_size", 1024)
@@ -219,9 +190,14 @@ def train_model(
             # 对于PRS等模型：两个输出都使用相同的标签
             labels_for_fit = [labels_for_fit] * len(loss)
 
-        history = model.fit(
+        fit_model(
+            model,
             train_features,
             labels_for_fit,
+            loss=loss,
+            loss_weights=loss_weights,
+            optimizer=optimizer_name,
+            optimizer_params=optimizer_params,
             batch_size=batch_size,
             epochs=epochs,
             verbose=verbose,
@@ -229,3 +205,195 @@ def train_model(
         )
 
         return model, user_model, item_model
+
+
+class KerasAdam(torch.optim.Optimizer):
+    """与 tf.keras.optimizers.Adam 数值一致的 Adam
+
+    与 torch.optim.Adam 的区别: Keras 将 epsilon 加在未做偏差修正的 sqrt(v) 上
+        alpha = lr * sqrt(1 - beta_2^t) / (1 - beta_1^t)
+        var -= alpha * m / (sqrt(v) + epsilon)
+    （torch 将 eps 加在修正后的 sqrt(v_hat) 上，梯度很小时（如嵌入表）更新量差异很大）；
+    且步数 t 为优化器全局迭代次数（Keras optimizer.iterations），而非每个参数各自的步数。
+    """
+
+    def __init__(self, params, lr=1e-3, beta_1=0.9, beta_2=0.999, epsilon=1e-7, amsgrad=False):
+        defaults = dict(lr=lr, beta_1=beta_1, beta_2=beta_2, epsilon=epsilon, amsgrad=amsgrad)
+        super().__init__(params, defaults)
+        self.iterations = 0
+
+    @torch.no_grad()
+    def step(self, closure=None):
+        loss = None
+        if closure is not None:
+            with torch.enable_grad():
+                loss = closure()
+        t = self.iterations + 1
+        for group in self.param_groups:
+            beta_1, beta_2, eps = group["beta_1"], group["beta_2"], group["epsilon"]
+            alpha = group["lr"] * (1.0 - beta_2 ** t) ** 0.5 / (1.0 - beta_1 ** t)
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                grad = p.grad
+                if grad.is_sparse:
+                    grad = grad.to_dense()
+                state = self.state[p]
+                if not state:
+                    state["m"] = torch.zeros_like(p)
+                    state["v"] = torch.zeros_like(p)
+                    if group["amsgrad"]:
+                        state["v_hat"] = torch.zeros_like(p)
+                m, v = state["m"], state["v"]
+                m.add_((grad - m) * (1.0 - beta_1))
+                v.add_((grad * grad - v) * (1.0 - beta_2))
+                if group["amsgrad"]:
+                    torch.maximum(state["v_hat"], v, out=state["v_hat"])
+                    v = state["v_hat"]
+                p.sub_((m * alpha) / (v.sqrt() + eps))
+        self.iterations += 1
+        return loss
+
+
+def build_optimizer(model: torch.nn.Module, optimizer_name: str = "adam", optimizer_params: Dict[str, Any] = None):
+    """构建优化器，参数名兼容 Keras（learning_rate/epsilon/beta_1/beta_2）"""
+    params = dict(optimizer_params or {})
+    lr = params.pop("learning_rate", params.pop("lr", None))
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    name = (optimizer_name or "adam").lower()
+    if name == "adam":
+        kwargs = {
+            "lr": 1e-3 if lr is None else lr,
+            "beta_1": params.pop("beta_1", 0.9),
+            "beta_2": params.pop("beta_2", 0.999),
+            "epsilon": params.pop("epsilon", 1e-7),  # Keras 默认 epsilon
+            "amsgrad": params.pop("amsgrad", False),
+        }
+        kwargs.update(params)
+        return KerasAdam(trainable, **kwargs)
+    if name == "adagrad":
+        return torch.optim.Adagrad(trainable, lr=1e-3 if lr is None else lr, initial_accumulator_value=0.1, eps=1e-7, **params)
+    if name == "sgd":
+        return torch.optim.SGD(trainable, lr=1e-2 if lr is None else lr, **params)
+    if name == "rmsprop":
+        return torch.optim.RMSprop(trainable, lr=1e-3 if lr is None else lr, alpha=0.9, eps=1e-7, **params)
+    raise ValueError(f"不支持的优化器: {optimizer_name}")
+
+
+def _as_output_list(outputs):
+    return list(outputs) if isinstance(outputs, (list, tuple)) else [outputs]
+
+
+def fit_model(
+    model,
+    features: Dict[str, Any],
+    labels: Any,
+    loss: Union[str, Callable, List] = "binary_crossentropy",
+    loss_weights: Optional[List[float]] = None,
+    optimizer: str = "adam",
+    optimizer_params: Optional[Dict[str, Any]] = None,
+    batch_size: int = 1024,
+    epochs: int = 1,
+    verbose: int = 0,
+    validation_split: float = 0.0,
+    shuffle: bool = True,
+) -> Dict[str, List[float]]:
+    """训练模型（对应 Keras model.compile + model.fit）
+
+    - validation_split: 与 Keras 一致，取数据末尾的比例作为验证集（不打乱）
+    - shuffle: 每个 epoch 打乱训练集
+    - 总损失 = sum(loss_weight_i * loss_i(y_i, output_i)) + 模型辅助损失(add_loss) + L2 正则
+    返回: history 字典 {"loss": [...], "val_loss": [...]}
+    """
+    device = get_device()
+    model.to(device)
+
+    n = num_samples(features)
+    if validation_split and 0 < validation_split < 1:
+        split_at = int(n * (1.0 - validation_split))
+    else:
+        split_at = n
+    train_idx_all = np.arange(split_at)
+    val_idx_all = np.arange(split_at, n)
+
+    label_list = labels if isinstance(labels, (list, tuple)) else [labels]
+    label_list = [None if l is None else np.asarray(l) for l in label_list]
+
+    # 先用一个批次数据前向一次，创建惰性参数，再创建优化器
+    model.build_with(slice_features(features, train_idx_all[: min(batch_size, len(train_idx_all))]), batch_size=min(batch_size, len(train_idx_all)))
+    opt = build_optimizer(model, optimizer, optimizer_params)
+
+    def compute_loss(outputs, batch_labels):
+        outputs = _as_output_list(outputs)
+        losses = loss if isinstance(loss, (list, tuple)) else [loss] * len(outputs)
+        if len(losses) == 1 and len(outputs) > 1:
+            losses = list(losses) * len(outputs)
+        weights = loss_weights if loss_weights is not None else [1.0] * len(outputs)
+        if isinstance(weights, dict):
+            names = model.output_names or []
+            weights = [weights.get(nm, 1.0) for nm in names]
+        total = None
+        for i, out in enumerate(outputs):
+            fn = get_loss(losses[i])
+            y = batch_labels[i] if i < len(batch_labels) else batch_labels[-1]
+            term = weights[i] * fn(y, out)
+            total = term if total is None else total + term
+        return total
+
+    def batch_labels_of(idx):
+        res = []
+        for l in label_list:
+            if l is None:
+                res.append(torch.zeros(len(idx), 1, device=device))
+            else:
+                res.append(to_tensor(l[idx], device))
+        return res
+
+    history = {"loss": [], "val_loss": []}
+    for epoch in range(epochs):
+        model.train()
+        order = np.random.permutation(train_idx_all) if shuffle else train_idx_all
+        total_loss, steps = 0.0, 0
+        iterator = range(0, len(order), batch_size)
+        if verbose:
+            iterator = tqdm(iterator, desc=f"Epoch {epoch + 1}/{epochs}", leave=False)
+        for start in iterator:
+            idx = order[start : start + batch_size]
+            batch = model.prepare_inputs(slice_features(features, idx), device)
+            outputs = model(batch)
+            loss_value = compute_loss(outputs, batch_labels_of(idx))
+            for extra in model.pop_extra_losses():
+                loss_value = loss_value + extra
+            reg = model.regularization_loss()
+            if reg is not None:
+                loss_value = loss_value + reg
+            opt.zero_grad(set_to_none=True)
+            loss_value.backward()
+            opt.step()
+            # 与 Keras 一致: epoch 损失为按样本数加权的批次损失均值
+            total_loss += float(loss_value.detach()) * len(idx)
+            steps += len(idx)
+        history["loss"].append(total_loss / max(steps, 1))
+
+        if len(val_idx_all) > 0:
+            model.eval()
+            val_total, val_steps = 0.0, 0
+            with torch.no_grad():
+                for start in range(0, len(val_idx_all), batch_size):
+                    idx = val_idx_all[start : start + batch_size]
+                    batch = model.prepare_inputs(slice_features(features, idx), device)
+                    val_value = compute_loss(model(batch), batch_labels_of(idx))
+                    reg = model.regularization_loss()
+                    if reg is not None:  # Keras 的 val_loss 同样包含正则损失
+                        val_value = val_value + reg
+                    val_total += float(val_value) * len(idx)
+                    val_steps += len(idx)
+            history["val_loss"].append(val_total / max(val_steps, 1))
+        if verbose:
+            msg = f"Epoch {epoch + 1}/{epochs} - loss: {history['loss'][-1]:.4f}"
+            if history["val_loss"]:
+                msg += f" - val_loss: {history['val_loss'][-1]:.4f}"
+            print(msg)
+    model.eval()
+    model.history = history
+    return history

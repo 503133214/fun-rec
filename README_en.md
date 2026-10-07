@@ -59,6 +59,26 @@ This book systematically covers the full technical evolution of recommendation s
 - **10. Production-grade Recommendation System**
   - Project Background & Goals / System Architecture Design / Offline Pipeline / Online Pipeline / Frontend & Interaction / Deployment & Operations
 
+## 🛠️ Installation
+
+The code in this book is implemented with **PyTorch**. We recommend creating a Python 3.10 environment with conda (conda-forge channel). From the repository root:
+
+```bash
+# 1. Create and activate the environment
+conda create -n funrec-torch -c conda-forge python=3.10
+conda activate funrec-torch
+
+# 2. Install PyTorch (GPU build from the CUDA 12.4 wheel index; pick the index matching your CUDA version,
+#    or use https://download.pytorch.org/whl/cpu for a CPU-only build)
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+
+# 3. Install the remaining dependencies and the funrec package
+pip install -r requirements.txt
+pip install -e .
+```
+
+For dataset download and `.env` path configuration, see the "Preparation" chapter of the book (`docs/_sources/chapter_installation`).
+
 We also establish a **FunRec learning community (WeChat group + knowledge planet)**, where the WeChat group is convenient for daily communication and discussion, and the knowledge planet is convenient for content retention. Some early recorded videos related to technology are also on Bilibili [All technical sharing content is on Bilibili](https://space.bilibili.com/431850986/channel/collectiondetail?sid=339597). Since the WeChat group's QR code is only valid for 7 days, just add the following WeChat Code, with remark: **Fun-Rec**, you will be added into a Fun-Rec discussion group. If you think the WeChat group is too noisy, it is recommended to add the knowledge planet directly!
 
 <div align=center> 

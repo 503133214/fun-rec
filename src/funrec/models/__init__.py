@@ -1,27 +1,7 @@
 """模型定义"""
 
-from .dssm import build_dssm_model
-from .fm import build_fm_model
-from .afm import build_afm_model
-from .nfm import build_nfm_model
-from .pnn import build_pnn_model
-from .fibinet import build_fibinet_model
-from .deepfm import build_deepfm_model
-from .dcn import build_dcn_model
-from .xdeepfm import build_xdeepfm_model
-from .autoint import build_autoint_model
-from .din import build_din_model
-from .dien import build_dien_model
-from .dsin import build_dsin_model
-from .fm_recall import build_fm_recall_model
-from .funksvd import build_funksvd_model
-from .biassvd import build_biassvd_model
-from .sdm import build_sdm_model
-from .wide_deep import build_wide_deep_model
-from .apg import build_apg_model  # noqa: F401
-from .m2m import build_m2m_model  # noqa: F401
-from .prm import build_prm_model  # noqa: F401
-from .item2vec import build_item2vec_model  # noqa: F401
+import importlib
+
 from .utils import (
     build_input_layer,
     build_embedding_table_dict,
@@ -29,6 +9,40 @@ from .utils import (
     concat_group_embedding,
     parse_group_feature_columns,
 )
+
+# 模型构建函数按需导入（PEP 562），避免导入 funrec.models 时加载全部模型
+_LAZY_BUILDERS = {
+    "build_dssm_model": "dssm",
+    "build_fm_model": "fm",
+    "build_afm_model": "afm",
+    "build_nfm_model": "nfm",
+    "build_pnn_model": "pnn",
+    "build_fibinet_model": "fibinet",
+    "build_deepfm_model": "deepfm",
+    "build_dcn_model": "dcn",
+    "build_xdeepfm_model": "xdeepfm",
+    "build_autoint_model": "autoint",
+    "build_din_model": "din",
+    "build_dien_model": "dien",
+    "build_dsin_model": "dsin",
+    "build_fm_recall_model": "fm_recall",
+    "build_funksvd_model": "funksvd",
+    "build_biassvd_model": "biassvd",
+    "build_sdm_model": "sdm",
+    "build_wide_deep_model": "wide_deep",
+    "build_apg_model": "apg",
+    "build_m2m_model": "m2m",
+    "build_prm_model": "prm",
+    "build_item2vec_model": "item2vec",
+}
+
+
+def __getattr__(name):
+    if name in _LAZY_BUILDERS:
+        module = importlib.import_module(f".{_LAZY_BUILDERS[name]}", __name__)
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "build_dssm_model",

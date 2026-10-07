@@ -15,6 +15,9 @@ RUN pip install uv
 # 复制依赖文件
 COPY pyproject.toml ./
 
+# 先从 PyTorch CPU 源安装 torch（在线服务只需 CPU 推理，避免下载体积巨大的 CUDA 版本）
+RUN uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+
 # 使用 uv 安装 Python 依赖
 RUN uv pip install --system -e .
 

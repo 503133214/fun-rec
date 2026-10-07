@@ -60,6 +60,25 @@
   - 项目背景与目标 / 系统架构设计 / 离线流水线 / 在线流程 / 前端与交互 / 部署与运维
 
 
+## 🛠️ 环境安装
+
+本书代码基于 **PyTorch** 实现。推荐使用 conda（conda-forge 源）创建 Python 3.10 环境，在仓库根目录执行：
+
+```bash
+# 1. 创建并激活环境
+conda create -n funrec-torch -c conda-forge python=3.10
+conda activate funrec-torch
+
+# 2. 安装 PyTorch（GPU 版本，CUDA 12.4 源；也可按本机 CUDA 版本更换，或使用 https://download.pytorch.org/whl/cpu 安装 CPU 版本）
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+
+# 3. 安装其余依赖与 funrec 库
+pip install -r requirements.txt
+pip install -e .
+```
+
+数据下载与 `.env` 路径配置请参考书中“准备工作”章节（`docs/_sources/chapter_installation`）。
+
 为了方便学习和交流，**我们建立了FunRec学习社区（微信群+知识星球）**，微信群方便大家平时日常交流和讨论，知识星球方便沉淀内容，B站上还有一些早期录制的相关视频[跟技术相关的分享内容都放在了B站](https://space.bilibili.com/431850986/channel/collectiondetail?sid=339597)。由于微信群的二维码只有7天内有效，所以直接加下面这个微信，备注：**Fun-Rec**，会被拉到Fun-Rec交流群，如果觉得微信群比较吵建议直接加知识星球！。
 
 <div align=center> 
