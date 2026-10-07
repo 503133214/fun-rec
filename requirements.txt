@@ -1,4 +1,4 @@
-tensorflow==2.13.0
+torch>=2.1  # GPU 版本请先按 README 从 PyTorch CUDA 源安装（如 cu124）
 pandas==2.0.3
 scikit-learn>=1.3.2
 python-dotenv==1.0.1

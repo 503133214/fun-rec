@@ -52,26 +52,24 @@ def deploy_recall_models(deploy_dir: Path):
         print("  ✗ movie_ids.npy 不存在")
         
     # 3. 用户模型 (YoutubeDNN)
-    user_model_path = config.SAVED_MODELS_DIR / "user_model"
+    user_model_path = config.USER_MODEL_PATH
     if user_model_path.exists():
         model_deploy_dir = deploy_dir / "model" / "user_recall" / "v1"
         model_deploy_dir.mkdir(parents=True, exist_ok=True)
         
-        # 复制整个模型目录
-        dest_model_path = model_deploy_dir / "user_model"
-        if dest_model_path.exists():
-            shutil.rmtree(dest_model_path)
-        shutil.copytree(user_model_path, dest_model_path)
+        # 复制模型文件（PyTorch .pt 单文件）
+        dest_model_path = model_deploy_dir / "user_model.pt"
+        shutil.copy2(user_model_path, dest_model_path)
         
         # 更新活跃版本指针
-        version_info = {"version": "v1", "path": "model/user_recall/v1/user_model"}
+        version_info = {"version": "v1", "path": "model/user_recall/v1/user_model.pt"}
         active_json_path = deploy_dir / "model" / "user_recall" / "active.json"
         active_json_path.parent.mkdir(parents=True, exist_ok=True)
         with open(active_json_path, "w") as f:
             json.dump(version_info, f)
         print("  ✓ 复制了 User Recall Model (YoutubeDNN)")
     else:
-        print("  ✗ User model 不存在")
+        print(f"  ✗ User model 不存在 at {user_model_path}")
 
 
 def deploy_ranking_models(deploy_dir: Path):
@@ -109,16 +107,14 @@ def deploy_ranking_models(deploy_dir: Path):
         model_deploy_dir = deploy_dir / "model" / "ranking" / "v1"
         model_deploy_dir.mkdir(parents=True, exist_ok=True)
         
-        # 复制整个模型目录
-        dest_model_path = model_deploy_dir / "ranking_model"
-        if dest_model_path.exists():
-            shutil.rmtree(dest_model_path)
-        shutil.copytree(ranking_model_path, dest_model_path)
+        # 复制模型文件（PyTorch .pt 单文件）
+        dest_model_path = model_deploy_dir / "ranking_model.pt"
+        shutil.copy2(ranking_model_path, dest_model_path)
         
         # 更新活跃版本指针
         version_info = {
             "version": "v1", 
-            "path": "model/ranking/v1/ranking_model",
+            "path": "model/ranking/v1/ranking_model.pt",
             "model_type": "deepfm"
         }
         active_json_path = deploy_dir / "model" / "ranking" / "active.json"

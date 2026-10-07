@@ -2,9 +2,8 @@
 特征列
 """
 
-from typing import Union, List
+from typing import Union, List, Callable
 from dataclasses import dataclass, field
-from tensorflow.keras.initializers import Initializer
 
 
 @dataclass
@@ -41,7 +40,7 @@ class FeatureColumn:
     max_len: int = 1  # 最大长度
     combiner: str = "mean"  # 变长特征聚合方式
     l2_reg: float = 0.0  # L2正则化系数
-    initializer: Union[str, Initializer] = "uniform"  # 初始化器
+    initializer: Union[str, Callable] = "uniform"  # 初始化器（Keras 风格名称或 callable(tensor)）
     dtype: str = "int32"  # 数据类型
     att_key_name: str = (
         None  # 注意力键名称，当特征是变长特征且通过din方式进行聚合时使用

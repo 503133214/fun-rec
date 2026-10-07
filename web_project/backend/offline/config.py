@@ -42,11 +42,14 @@ class Config:
     VOCAB_DICT_PATH = TEMP_DIR / "vocab_dict.pkl"
     ITEM_EMB_PATH = TEMP_DIR / "item_embeddings.npy"
     MOVIE_IDS_PATH = TEMP_DIR / "movie_ids.npy"
+    # PyTorch 模型文件（funrec.models.base.save_model 保存的单个 .pt 文件）
+    USER_MODEL_PATH = SAVED_MODELS_DIR / "user_model.pt"
+    ITEM_MODEL_PATH = SAVED_MODELS_DIR / "item_model.pt"
     
     # 文件路径 - 精排模型 (DeepFM)
     RANKING_TRAIN_DATA_PATH = TEMP_DIR / "ranking_train_eval_sample.pkl"
     RANKING_FEATURE_DICT_PATH = TEMP_DIR / "ranking_feature_dict.pkl"
     RANKING_VOCAB_DICT_PATH = TEMP_DIR / "ranking_vocab_dict.pkl"
-    RANKING_MODEL_PATH = SAVED_MODELS_DIR / "ranking_model"
+    RANKING_MODEL_PATH = SAVED_MODELS_DIR / "ranking_model.pt"
 
 config = Config()

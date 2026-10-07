@@ -4,10 +4,11 @@
 负责从本地共享目录加载召回模型和词表。
 实现单例模式以避免重复加载模型。
 
-注意：TensorFlow 采用懒加载方式导入，以避免模块加载时的递归错误。
+注意：PyTorch / funrec 采用懒加载方式导入，以加快服务启动速度。
 """
 
 import os
+import sys
 import json
 import pickle
 import logging
@@ -22,28 +23,34 @@ from app.config import settings
 logger = logging.getLogger(__name__)
 
 
-def _get_custom_objects(tf_module) -> dict:
+def _get_funrec_load_model():
     """
-    懒加载 TensorFlow 模型所需的自定义对象。
-    
-    Args:
-        tf_module: 已导入的 TensorFlow 模块，确保 TF 先被加载
+    懒加载 funrec 的 PyTorch 模型加载函数，并设置推理设备。
+
+    funrec 的 load_model 会根据保存的构建函数路径、特征列和模型参数重建模型并加载参数，
+    因此无需额外注册自定义层。若 funrec 不在 PYTHONPATH 中，
+    则回退为将仓库根目录下的 src/ 加入 sys.path（与离线训练脚本一致）。
+    推理设备由环境变量 MODEL_DEVICE 指定（默认 cpu，在线服务通常无 GPU）。
     """
     try:
-        # TF 必须在导入 funrec（funrec 也会导入 TF）之前完全加载
-        # 这样可以避免 TF 懒加载器的递归问题
-        from funrec.models.layers import DNNs, L2NormalizeLayer
-        return {"DNNs": DNNs, "L2NormalizeLayer": L2NormalizeLayer}
-    except ImportError as e:
-        logger.warning(f"无法导入 funrec 自定义层: {e}")
-        return {}
+        import funrec  # noqa: F401
+    except ImportError:
+        # online/<模块>/resource_manager.py -> 仓库根目录 (web_project 的上一级)
+        parents = Path(__file__).resolve().parents
+        src_dir = parents[4] / "src" if len(parents) > 4 else None
+        if src_dir is not None and src_dir.exists() and str(src_dir) not in sys.path:
+            sys.path.append(str(src_dir))
+    from funrec.models.base import load_model, set_device
+
+    set_device(os.getenv("MODEL_DEVICE", "cpu"))
+    return load_model
 
 
 class RecallResourceManager:
     """
     召回模型的单例资源管理器。
     
-    注意：资源采用懒加载方式，在首次访问时才加载，以避免启动时的 TF 导入问题。
+    注意：资源采用懒加载方式，在首次访问时才加载，以避免启动时导入 PyTorch 的开销。
     """
     _instance = None
     
@@ -126,27 +133,22 @@ class RecallResourceManager:
                 model_rel_path = version_info.get("path")
             except:
                 logger.warning("无法找到激活的模型版本，尝试使用默认路径")
-                model_rel_path = "model/user_recall/v1/user_model"
+                model_rel_path = "model/user_recall/v1/user_model.pt"
 
             if model_rel_path:
                 model_path = self.deploy_dir / model_rel_path
                 
                 if not model_path.exists():
-                    logger.error(f"模型目录不存在: {model_path}")
+                    logger.error(f"模型文件不存在: {model_path}")
+                    return
+                if model_path.is_dir():
+                    logger.error(f"{model_path} 是目录（旧版 TensorFlow SavedModel?），请重新训练并部署 PyTorch 模型 (.pt)")
                     return
                 
                 logger.info(f"从 {model_path} 加载用户模型...")
-                # 先导入 TensorFlow，然后获取自定义对象（会导入 funrec）
-                # 这个顺序可以防止 TF 懒加载器的递归问题
-                import tensorflow as tf
-                custom_objects = _get_custom_objects(tf)
-                
-                # 先尝试使用自定义对象加载，失败则使用 compile=False
-                try:
-                    self.user_model = tf.keras.models.load_model(model_path, custom_objects=custom_objects)
-                except Exception as load_err:
-                    logger.warning(f"使用自定义对象加载失败: {load_err}，尝试使用 compile=False")
-                    self.user_model = tf.keras.models.load_model(model_path, compile=False)
+                load_model = _get_funrec_load_model()
+                # 保存时 tower='user_model'，load_model 直接返回用户塔子模型（eval 模式）
+                self.user_model = load_model(str(model_path), map_location="cpu")
                 logger.info(f"  -> 用户模型加载完成。")
             else:
                 logger.warning("未找到激活的模型路径。")

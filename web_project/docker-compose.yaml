@@ -71,10 +71,12 @@ services:
       - DATA_DIR=/data
       - POSTER_DIR=/data/image
       - DEBUG=true
-      - TF_USE_LEGACY_KERAS=1
+      - MODEL_DEVICE=cpu
       - PYTHONPATH=/app/src:/app
     volumes:
       - ./backend:/app
+      # 在线服务通过 funrec.models.base.load_model 重建 PyTorch 模型，需要 funrec 源码
+      - ../src:/app/src:ro
       - ../tmp:/app/tmp      
       - ${FUNREC_RAW_DATA_PATH}:/data
     depends_on:

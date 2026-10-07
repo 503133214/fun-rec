@@ -25,8 +25,17 @@ def preprocess(input_path: Path, output_path: Path) -> dict:
     )
 
     # 视频统计特征
-    video_features_statistics = pd.read_csv(
-        input_path / "data" / "video_features_statistic_1k.csv"
+    # 原始文件约 3.4GB，分块读取并只保留日志中出现过的视频（后续为 left merge，结果不变），降低内存峰值
+    log_video_ids = set(log_df["video_id"].unique())
+    video_features_statistics = pd.concat(
+        [
+            chunk[chunk["video_id"].isin(log_video_ids)]
+            for chunk in pd.read_csv(
+                input_path / "data" / "video_features_statistic_1k.csv",
+                chunksize=500_000,
+            )
+        ],
+        ignore_index=True,
     )
 
     log_colmns = [

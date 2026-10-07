@@ -3,10 +3,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-import tensorflow as tf
+import torch
 import networkx as nx
 import numpy as np
 from tqdm import tqdm
+
+from .base import Embedding, FunRecModel, Layer, SubModel
 
 
 class SimpleWalker:
@@ -89,7 +91,7 @@ def get_graph_context_all_pairs(walks, window_size):
     return all_pairs
 
 
-class ItemSpecificAttentionLayer(tf.keras.layers.Layer):
+class ItemSpecificAttentionLayer(Layer):
     """
     正确实现EGES论文中描述的加权池化注意力层
     A ∈ R^{|V| × (n+1)} - 每个商品有自己的一组特征权重
@@ -108,16 +110,16 @@ class ItemSpecificAttentionLayer(tf.keras.layers.Layer):
         num_features = input_shape[1]  # n+1
 
         # 为每个商品创建一组特征权重 A ∈ R^{|V| × (n+1)}
+        # RandomNormal() 默认 mean=0, stddev=0.05；L2 正则系数 1e-5
         self.attention_weights = self.add_weight(
             name="attention_weights",
             shape=(self.num_items, num_features),  # |V| x (n+1)
-            initializer=tf.keras.initializers.RandomNormal(),
+            initializer="random_normal",
             trainable=True,
-            regularizer=tf.keras.regularizers.l2(1e-5),
+            regularizer=1e-5,
         )
-        super(ItemSpecificAttentionLayer, self).build(input_shape)
 
-    def call(self, inputs, item_indices):
+    def forward(self, inputs, item_indices):
         """
         参数:
             inputs: 特征嵌入 [batch_size, n+1, emb_dim], n 是特征数量，emb_dim 是嵌入维度
@@ -125,25 +127,25 @@ class ItemSpecificAttentionLayer(tf.keras.layers.Layer):
         """
 
         # 获取每个样本对应的商品特定权重 [batch_size, n+1]
-        batch_attention_weights = tf.gather(self.attention_weights, item_indices)
+        batch_attention_weights = self.attention_weights[item_indices.long()]
 
         # 计算 e^(a_v^j)
-        exp_attention = tf.exp(batch_attention_weights)  # [batch_size, n+1]
+        exp_attention = torch.exp(batch_attention_weights)  # [batch_size, n+1]
 
         # 计算每个样本的权重和 [batch_size, 1]
-        attention_sum = tf.reduce_sum(exp_attention, axis=1, keepdims=True)
+        attention_sum = torch.sum(exp_attention, dim=1, keepdim=True)
 
         # 归一化权重 [batch_size, n+1]
         normalized_attention = exp_attention / attention_sum
 
         # 扩展维度用于广播 [batch_size, n+1, 1]
-        normalized_attention = tf.expand_dims(normalized_attention, axis=-1)
+        normalized_attention = normalized_attention.unsqueeze(-1)
 
         # 应用权重到特征嵌入
         weighted_embedding = inputs * normalized_attention  # [batch_size, n+1, emb_dim]
 
         # 求和得到最终表示
-        output = tf.reduce_sum(weighted_embedding, axis=1)  # [batch_size, emb_dim]
+        output = torch.sum(weighted_embedding, dim=1)  # [batch_size, emb_dim]
 
         return output, normalized_attention
 
@@ -162,6 +164,107 @@ def generate_negative_samples(train_sample_dict, num_negatives=2):
     np.random.shuffle(negative_sample_dict["context_id"])
 
     return negative_sample_dict
+
+
+class EGESModel(FunRecModel):
+    """EGES 主模型: 物品侧特征加权聚合后与上下文物品嵌入点积，输出 sigmoid 概率
+
+    输入: {"movie_id": [B], "context_id": [B], "genre_id": [B]}（[B, 1] 会被展平为 [B]）
+    输出: [B, 1] 概率
+    子塔: self.item_tower（输入为 item_feature_list，输出最终物品嵌入 [B, emb_dim]），
+          对应原实现中的 main_model.item_input / main_model.item_embedding
+    """
+
+    def __init__(
+        self,
+        item_feature_list,
+        item_vocab_size,
+        genre_vocab_size,
+        emb_dim=16,
+        l2_reg=1e-5,
+        use_attention=True,
+    ):
+        super().__init__(input_names=["movie_id", "context_id", "genre_id"], name="eges")
+        self.item_feature_list = list(item_feature_list)
+        self.use_attention = use_attention
+
+        # 嵌入层（RandomNormal 初始化 + L2 正则，不使用 mask）
+        self.movie_emb_table = Embedding(
+            item_vocab_size,
+            emb_dim,
+            embeddings_initializer="random_normal",
+            l2_reg=l2_reg,
+            mask_zero=False,
+            name="eges_movie_id",
+        )
+        self.genre_emb_table = Embedding(
+            genre_vocab_size,
+            emb_dim,
+            embeddings_initializer="random_normal",
+            l2_reg=l2_reg,
+            mask_zero=False,
+            name="eges_genre_id",
+        )
+        self.context_emb_table = Embedding(
+            item_vocab_size,
+            emb_dim,
+            embeddings_initializer="random_normal",
+            l2_reg=l2_reg,
+            mask_zero=False,
+            name="eges_context_id",
+        )
+
+        # 加权聚合
+        if use_attention:
+            self.attention_layer = ItemSpecificAttentionLayer(num_items=item_vocab_size)
+        else:
+            self.attention_layer = None
+
+        # 便于评估：物品输入与嵌入（与主模型共享参数）
+        item_input_names = [k for k in self.input_names if k in self.item_feature_list]
+        self.item_tower = SubModel(self, "encode_item", item_input_names, name="item_tower")
+
+    @staticmethod
+    def _ids(x):
+        # 原实现输入形状为 ()，即 [B]；这里将 [B, 1] 展平为 [B]
+        return x.reshape(-1)
+
+    def _lookup(self, feat_name, ids):
+        table = {
+            "movie_id": self.movie_emb_table,
+            "genre_id": self.genre_emb_table,
+            "context_id": self.context_emb_table,
+        }[feat_name]
+        return table(self._ids(ids)).unsqueeze(1)  # [B,1,D]
+
+    def encode_item(self, inputs):
+        # 堆叠物品侧特征
+        all_feature_embeddings = []
+        for feat_name in self.item_feature_list:
+            all_feature_embeddings.append(self._lookup(feat_name, inputs[feat_name]))  # [B,1,D]
+        stacked_embeddings = torch.cat(all_feature_embeddings, dim=1)  # [B,n,D]
+
+        # 加权聚合
+        if self.use_attention:
+            # 商品索引（注意力权重用）
+            item_indices = self._ids(inputs["movie_id"]).long()
+            final_embedding, _ = self.attention_layer(stacked_embeddings, item_indices)
+        else:
+            final_embedding = torch.mean(stacked_embeddings, dim=1)
+        return final_embedding
+
+    def forward(self, inputs):
+        final_embedding = self.encode_item(inputs)
+
+        # 与上下文点积
+        context_embedding = self._lookup("context_id", inputs["context_id"]).squeeze(1)
+        logits = torch.sum(final_embedding * context_embedding, dim=1, keepdim=True)
+        output = torch.sigmoid(logits)
+        # 原实现最后一层为 Activation("sigmoid")（其后无 Flatten），Keras 交叉熵损失会直接使用其 logits
+        # （from_logits=True，不裁剪），见 training/loss.py 中的 _keras_logits
+        output._keras_logits = logits
+        output._keras_logits_op = "Sigmoid"
+        return output
 
 
 def build_eges_model(feature_columns, model_config):
@@ -204,76 +307,17 @@ def build_eges_model(feature_columns, model_config):
     if not isinstance(genre_vocab_size, int):
         genre_vocab_size = len(genre_vocab_size) + 1
 
-    # 输入层
-    inputs = {
-        "movie_id": tf.keras.Input(shape=(), dtype="int32", name="movie_id"),
-        "context_id": tf.keras.Input(shape=(), dtype="int32", name="context_id"),
-        "genre_id": tf.keras.Input(shape=(), dtype="int32", name="genre_id"),
-    }
-
-    # 嵌入层
-    movie_emb_table = tf.keras.layers.Embedding(
-        input_dim=item_vocab_size,
-        output_dim=emb_dim,
-        name="eges_movie_id",
-        embeddings_initializer=tf.keras.initializers.RandomNormal(),
-        embeddings_regularizer=tf.keras.regularizers.l2(l2_reg),
-        mask_zero=False,
-    )
-    genre_emb_table = tf.keras.layers.Embedding(
-        input_dim=genre_vocab_size,
-        output_dim=emb_dim,
-        name="eges_genre_id",
-        embeddings_initializer=tf.keras.initializers.RandomNormal(),
-        embeddings_regularizer=tf.keras.regularizers.l2(l2_reg),
-        mask_zero=False,
-    )
-    context_emb_table = tf.keras.layers.Embedding(
-        input_dim=item_vocab_size,
-        output_dim=emb_dim,
-        name="eges_context_id",
-        embeddings_initializer=tf.keras.initializers.RandomNormal(),
-        embeddings_regularizer=tf.keras.regularizers.l2(l2_reg),
-        mask_zero=False,
+    # 主模型（输入: movie_id / context_id / genre_id，输出: sigmoid 概率 [B,1]）
+    model = EGESModel(
+        item_feature_list=item_feature_list,
+        item_vocab_size=item_vocab_size,
+        genre_vocab_size=genre_vocab_size,
+        emb_dim=emb_dim,
+        l2_reg=l2_reg,
+        use_attention=use_attention,
     )
 
-    # 查表
-    feature_embedding_dict = {
-        "movie_id": tf.expand_dims(movie_emb_table(inputs["movie_id"]), axis=1),
-        "genre_id": tf.expand_dims(genre_emb_table(inputs["genre_id"]), axis=1),
-        "context_id": tf.expand_dims(context_emb_table(inputs["context_id"]), axis=1),
-    }
-
-    # 堆叠物品侧特征
-    all_feature_embeddings = []
-    for feat_name in item_feature_list:
-        all_feature_embeddings.append(feature_embedding_dict[feat_name])  # [B,1,D]
-    stacked_embeddings = tf.concat(all_feature_embeddings, axis=1)  # [B,n,D]
-
-    # 商品索引（注意力权重用）
-    item_indices = tf.cast(inputs["movie_id"], tf.int32)
-
-    # 加权聚合
-    if use_attention:
-        attention_layer = ItemSpecificAttentionLayer(num_items=item_vocab_size)
-        final_embedding, _ = attention_layer(stacked_embeddings, item_indices)
-    else:
-        final_embedding = tf.reduce_mean(stacked_embeddings, axis=1)
-
-    # 与上下文点积
-    context_embedding = tf.squeeze(feature_embedding_dict["context_id"], axis=1)
-    output = tf.reduce_sum(final_embedding * context_embedding, axis=1, keepdims=True)
-    output = tf.keras.layers.Activation("sigmoid")(output)
-
-    # 主模型
-    model = tf.keras.Model(inputs=inputs, outputs=output)
-
-    # 便于评估：物品输入与嵌入
-    item_inputs = {k: v for k, v in inputs.items() if k in item_feature_list}
-    model.__setattr__("item_input", item_inputs)
-    model.__setattr__("item_embedding", final_embedding)
-
-    # 物品侧嵌入模型
-    item_model = tf.keras.Model(inputs=item_inputs, outputs=final_embedding)
+    # 物品侧嵌入模型（与主模型共享参数，评估时通过 main_model.item_tower 使用）
+    item_model = model.item_tower
 
     return model, None, item_model
